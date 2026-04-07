@@ -13,6 +13,14 @@ use std::path::PathBuf;
 /// Maximum number of viewport slots
 pub const MAX_VIEWPORTS: usize = 8;
 
+/// Shared context passed to grid rendering to avoid too many arguments
+struct GridContext<'a> {
+    active_id: ViewportId,
+    drops: Vec<(ViewportId, DroppedSeries)>,
+    ref_lines: &'a [Vec<ReferenceLine>],
+    mode: InteractionMode,
+}
+
 /// Viewport identifier (0-7)
 pub type ViewportId = usize;
 
@@ -903,13 +911,19 @@ impl ViewportManager {
                 clicked = clicked_inner;
             }
             ViewportLayout::Grid2x2 => {
-                clicked = self.show_grid(ui, 2, 2, active_id, &mut drops, &ref_lines, mode);
+                let mut ctx = GridContext { active_id, drops, ref_lines: &ref_lines, mode };
+                clicked = self.show_grid(ui, 2, 2, &mut ctx);
+                drops = ctx.drops;
             }
             ViewportLayout::Grid3x2 => {
-                clicked = self.show_grid(ui, 3, 2, active_id, &mut drops, &ref_lines, mode);
+                let mut ctx = GridContext { active_id, drops, ref_lines: &ref_lines, mode };
+                clicked = self.show_grid(ui, 3, 2, &mut ctx);
+                drops = ctx.drops;
             }
             ViewportLayout::Grid4x2 => {
-                clicked = self.show_grid(ui, 4, 2, active_id, &mut drops, &ref_lines, mode);
+                let mut ctx = GridContext { active_id, drops, ref_lines: &ref_lines, mode };
+                clicked = self.show_grid(ui, 4, 2, &mut ctx);
+                drops = ctx.drops;
             }
             ViewportLayout::Grid2x2Plus1 => {
                 // 2x2 grid on left, 1 tall viewport on right
@@ -923,8 +937,9 @@ impl ViewportManager {
                 ui.horizontal(|ui| {
                     // Left side: 2x2 grid
                     ui.allocate_ui(egui::vec2(left_width, available.y), |ui| {
-                        grid_clicked =
-                            self.show_grid(ui, 2, 2, active_id, &mut drops, &ref_lines, mode);
+                        let mut ctx = GridContext { active_id, drops: std::mem::take(&mut drops), ref_lines: &ref_lines, mode };
+                        grid_clicked = self.show_grid(ui, 2, 2, &mut ctx);
+                        drops = ctx.drops;
                     });
 
                     ui.add_space(4.0);
@@ -958,17 +973,17 @@ impl ViewportManager {
 
     /// Show a grid of viewports
     /// Returns clicked viewport ID if any
-    #[allow(clippy::too_many_arguments)]
     fn show_grid(
         &mut self,
         ui: &mut Ui,
         cols: usize,
         rows: usize,
-        active_id: ViewportId,
-        drops: &mut Vec<(ViewportId, DroppedSeries)>,
-        ref_lines: &[Vec<ReferenceLine>],
-        mode: InteractionMode,
+        ctx: &mut GridContext<'_>,
     ) -> Option<ViewportId> {
+        let active_id = ctx.active_id;
+        let mode = ctx.mode;
+        let ref_lines = ctx.ref_lines;
+        let drops = &mut ctx.drops;
         let available = ui.available_size();
         let cell_width = (available.x - (cols as f32 - 1.0) * 4.0) / cols as f32;
         let cell_height = (available.y - (rows as f32 - 1.0) * 4.0) / rows as f32;

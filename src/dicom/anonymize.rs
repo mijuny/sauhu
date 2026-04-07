@@ -511,6 +511,8 @@ pub fn anonymize_patient(
 mod tests {
     use super::*;
 
+    // --- UidGenerator tests ---
+
     #[test]
     fn test_uid_generator_consistency() {
         let mut gen = UidGenerator::new();
@@ -529,31 +531,216 @@ mod tests {
     }
 
     #[test]
-    fn test_uid_format() {
+    fn test_uid_format_prefix_and_length() {
         let mut gen = UidGenerator::new();
         let uid = gen.get_uid("original");
         assert!(uid.starts_with("2.25."), "UID should start with 2.25 root");
         assert!(uid.len() <= 64, "UID should be max 64 chars");
+        // The suffix after "2.25." should be numeric only (decimal representation of UUID)
+        let suffix = &uid["2.25.".len()..];
+        assert!(
+            suffix.chars().all(|c| c.is_ascii_digit()),
+            "UID suffix should be all digits, got: {}",
+            suffix
+        );
     }
 
     #[test]
-    fn test_random_name_generation() {
-        let name1 = generate_random_name();
-        let name2 = generate_random_name();
-
-        // Names should be in DICOM format (Family^Given)
-        assert!(name1.contains('^'), "Name should be in DICOM format");
-
-        // Names could be same by chance, but format should be consistent
-        assert!(name1.split('^').count() == 2);
+    fn test_uid_contains_only_valid_dicom_characters() {
+        let mut gen = UidGenerator::new();
+        // Generate several UIDs and verify all contain only digits and dots
+        for i in 0..20 {
+            let uid = gen.get_uid(&format!("test.uid.{}", i));
+            assert!(
+                uid.chars().all(|c| c.is_ascii_digit() || c == '.'),
+                "UID should contain only digits and dots, got: {}",
+                uid
+            );
+            // DICOM UIDs must not have leading zeros in components (except the component "0" itself)
+            // The 2.25 prefix is fine; check the decimal suffix doesn't start with 0
+            // unless the entire value is 0 (astronomically unlikely for a UUID)
+            let suffix = &uid["2.25.".len()..];
+            if suffix.len() > 1 {
+                assert!(
+                    !suffix.starts_with('0'),
+                    "UID decimal suffix should not have leading zero: {}",
+                    uid
+                );
+            }
+        }
     }
+
+    #[test]
+    fn test_uid_generator_many_unique() {
+        let mut gen = UidGenerator::new();
+        let mut uids: Vec<String> = Vec::new();
+        for i in 0..100 {
+            uids.push(gen.get_uid(&format!("original.{}", i)));
+        }
+        // All should be unique
+        let unique: std::collections::HashSet<&String> = uids.iter().collect();
+        assert_eq!(uids.len(), unique.len(), "All generated UIDs should be unique");
+    }
+
+    #[test]
+    fn test_uid_generator_empty_input() {
+        let mut gen = UidGenerator::new();
+        let uid = gen.get_uid("");
+        assert!(uid.starts_with("2.25."), "Empty input should still produce valid UID");
+        assert!(uid.len() <= 64);
+    }
+
+    #[test]
+    fn test_uid_generator_get_mapping() {
+        let mut gen = UidGenerator::new();
+        let uid1 = gen.get_uid("1.2.3");
+        let uid2 = gen.get_uid("4.5.6");
+        let mapping = gen.get_mapping();
+        assert_eq!(mapping.len(), 2);
+        assert_eq!(mapping.get("1.2.3").unwrap(), &uid1);
+        assert_eq!(mapping.get("4.5.6").unwrap(), &uid2);
+    }
+
+    #[test]
+    fn test_uid_generator_default() {
+        let gen = UidGenerator::default();
+        assert!(gen.get_mapping().is_empty());
+    }
+
+    // --- Name generation tests ---
+
+    #[test]
+    fn test_random_name_dicom_format() {
+        // Run multiple times since it's random
+        for _ in 0..50 {
+            let name = generate_random_name();
+            let parts: Vec<&str> = name.split('^').collect();
+            assert_eq!(parts.len(), 2, "Name should have exactly two parts: {}", name);
+            assert!(!parts[0].is_empty(), "Surname should not be empty");
+            assert!(!parts[1].is_empty(), "First name should not be empty");
+        }
+    }
+
+    #[test]
+    fn test_random_name_uses_known_lists() {
+        // Generate many names and verify all parts come from our lists
+        for _ in 0..100 {
+            let name = generate_random_name();
+            let parts: Vec<&str> = name.split('^').collect();
+            let surname = parts[0];
+            let first_name = parts[1];
+            assert!(
+                NATURE_SURNAMES.contains(&surname),
+                "Surname '{}' not in NATURE_SURNAMES list",
+                surname
+            );
+            assert!(
+                FIRE_FIRST_NAMES.contains(&first_name),
+                "First name '{}' not in FIRE_FIRST_NAMES list",
+                first_name
+            );
+        }
+    }
+
+    // --- Patient ID generation tests ---
 
     #[test]
     fn test_patient_id_generation() {
-        let id = generate_patient_id("TULI", 1);
-        assert_eq!(id, "TULI001");
+        assert_eq!(generate_patient_id("TULI", 1), "TULI001");
+        assert_eq!(generate_patient_id("TULI", 42), "TULI042");
+        assert_eq!(generate_patient_id("TULI", 999), "TULI999");
+    }
 
-        let id2 = generate_patient_id("TULI", 42);
-        assert_eq!(id2, "TULI042");
+    #[test]
+    fn test_patient_id_zero() {
+        assert_eq!(generate_patient_id("TULI", 0), "TULI000");
+    }
+
+    #[test]
+    fn test_patient_id_large_number() {
+        // Numbers above 999 get more digits (no truncation)
+        assert_eq!(generate_patient_id("TULI", 1000), "TULI1000");
+        assert_eq!(generate_patient_id("TULI", 12345), "TULI12345");
+    }
+
+    #[test]
+    fn test_patient_id_custom_prefix() {
+        assert_eq!(generate_patient_id("ANON", 7), "ANON007");
+        assert_eq!(generate_patient_id("", 1), "001");
+    }
+
+    // --- Accession number generation tests ---
+
+    #[test]
+    fn test_accession_number_format() {
+        assert_eq!(generate_accession_number("SAU", 1), "SAU00001");
+        assert_eq!(generate_accession_number("SAU", 42), "SAU00042");
+        assert_eq!(generate_accession_number("SAU", 99999), "SAU99999");
+    }
+
+    #[test]
+    fn test_accession_number_zero() {
+        assert_eq!(generate_accession_number("SAU", 0), "SAU00000");
+    }
+
+    #[test]
+    fn test_accession_number_large() {
+        assert_eq!(generate_accession_number("SAU", 100000), "SAU100000");
+    }
+
+    #[test]
+    fn test_accession_number_custom_prefix() {
+        assert_eq!(generate_accession_number("ACC", 5), "ACC00005");
+        assert_eq!(generate_accession_number("", 123), "00123");
+    }
+
+    // --- AnonymizeConfig tests ---
+
+    #[test]
+    fn test_default_config() {
+        let config = AnonymizeConfig::default();
+        assert_eq!(config.patient_id_prefix, "TULI");
+        assert_eq!(config.accession_prefix, "SAU");
+        assert!(config.keep_patient_sex);
+    }
+
+    // --- Tags to clear tests ---
+
+    #[test]
+    fn test_tags_to_clear_not_empty() {
+        let tags = get_tags_to_clear();
+        assert!(!tags.is_empty(), "Should have tags to clear");
+    }
+
+    #[test]
+    fn test_tags_to_clear_contains_key_phi_tags() {
+        let tags = get_tags_to_clear();
+        assert!(tags.contains(&tags::INSTITUTION_NAME));
+        assert!(tags.contains(&tags::REFERRING_PHYSICIAN_NAME));
+        assert!(tags.contains(&tags::PATIENT_ADDRESS));
+    }
+
+    // --- Name list sanity tests ---
+
+    #[test]
+    fn test_name_lists_not_empty() {
+        assert!(!FIRE_FIRST_NAMES.is_empty());
+        assert!(!NATURE_SURNAMES.is_empty());
+    }
+
+    #[test]
+    fn test_name_lists_no_duplicates() {
+        let first_set: std::collections::HashSet<&&str> = FIRE_FIRST_NAMES.iter().collect();
+        assert_eq!(
+            first_set.len(),
+            FIRE_FIRST_NAMES.len(),
+            "FIRE_FIRST_NAMES has duplicates"
+        );
+        let last_set: std::collections::HashSet<&&str> = NATURE_SURNAMES.iter().collect();
+        assert_eq!(
+            last_set.len(),
+            NATURE_SURNAMES.len(),
+            "NATURE_SURNAMES has duplicates"
+        );
     }
 }

@@ -313,3 +313,220 @@ impl std::fmt::Display for CacheStats {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Create a minimal DicomImage for testing with a given pixel buffer size
+    fn make_test_image(width: u32, height: u32) -> DicomImage {
+        let pixel_count = (width * height) as usize;
+        DicomImage {
+            pixels: vec![0u16; pixel_count],
+            width,
+            height,
+            pixel_spacing: None,
+            rescale_slope: 1.0,
+            rescale_intercept: 0.0,
+            window_center: 400.0,
+            window_width: 1500.0,
+            modality: None,
+            min_value: 0.0,
+            max_value: 4095.0,
+            invert: false,
+            image_plane: None,
+            sop_instance_uid: None,
+            study_instance_uid: None,
+            patient_name: None,
+            patient_id: None,
+            patient_age: None,
+            patient_sex: None,
+            study_date: None,
+            study_description: None,
+            series_description: None,
+            slice_thickness: None,
+            magnetic_field_strength: None,
+            repetition_time: None,
+            echo_time: None,
+            sequence_name: None,
+            kvp: None,
+            exposure: None,
+            slice_location: None,
+            pixel_representation: 0,
+        }
+    }
+
+    #[test]
+    fn insert_and_get() {
+        let mut cache = ImageCache::new(10 * 1024 * 1024); // 10 MB
+        let path = PathBuf::from("/test/image1.dcm");
+        let image = make_test_image(64, 64);
+
+        cache.insert(path.clone(), image);
+
+        let retrieved = cache.get(&path);
+        assert!(retrieved.is_some());
+        let img = retrieved.unwrap();
+        assert_eq!(img.width, 64);
+        assert_eq!(img.height, 64);
+    }
+
+    #[test]
+    fn get_missing_returns_none() {
+        let mut cache = ImageCache::new(10 * 1024 * 1024);
+        let path = PathBuf::from("/test/nonexistent.dcm");
+        assert!(cache.get(&path).is_none());
+    }
+
+    #[test]
+    fn contains_check() {
+        let mut cache = ImageCache::new(10 * 1024 * 1024);
+        let path = PathBuf::from("/test/image1.dcm");
+
+        assert!(!cache.contains(&path));
+
+        cache.insert(path.clone(), make_test_image(32, 32));
+
+        assert!(cache.contains(&path));
+    }
+
+    #[test]
+    fn lru_eviction_removes_oldest() {
+        // Use a very small cache so images get evicted
+        // Each 64x64 image: struct size + 64*64*2 capacity bytes + 256 metadata ~ 8.5 KB
+        let image_mem = estimate_memory(&make_test_image(64, 64));
+
+        // Allow space for exactly 2 images
+        let max_memory = image_mem * 2 + 1;
+        let mut cache = ImageCache::new(max_memory);
+
+        let path1 = PathBuf::from("/test/image1.dcm");
+        let path2 = PathBuf::from("/test/image2.dcm");
+        let path3 = PathBuf::from("/test/image3.dcm");
+
+        cache.insert(path1.clone(), make_test_image(64, 64));
+        cache.insert(path2.clone(), make_test_image(64, 64));
+
+        assert!(cache.contains(&path1));
+        assert!(cache.contains(&path2));
+
+        // Inserting a third should evict the oldest (path1)
+        cache.insert(path3.clone(), make_test_image(64, 64));
+
+        assert!(!cache.contains(&path1), "oldest entry should be evicted");
+        assert!(cache.contains(&path2));
+        assert!(cache.contains(&path3));
+    }
+
+    #[test]
+    fn lru_get_refreshes_entry() {
+        let image_mem = estimate_memory(&make_test_image(64, 64));
+        let max_memory = image_mem * 2 + 1;
+        let mut cache = ImageCache::new(max_memory);
+
+        let path1 = PathBuf::from("/test/image1.dcm");
+        let path2 = PathBuf::from("/test/image2.dcm");
+        let path3 = PathBuf::from("/test/image3.dcm");
+
+        cache.insert(path1.clone(), make_test_image(64, 64));
+        cache.insert(path2.clone(), make_test_image(64, 64));
+
+        // Access path1 to refresh it (move to most recent)
+        let _ = cache.get(&path1);
+
+        // Insert path3 - should evict path2 (now the oldest), not path1
+        cache.insert(path3.clone(), make_test_image(64, 64));
+
+        assert!(cache.contains(&path1), "recently accessed entry should survive");
+        assert!(!cache.contains(&path2), "least recently used should be evicted");
+        assert!(cache.contains(&path3));
+    }
+
+    #[test]
+    fn insert_same_path_replaces_entry() {
+        let mut cache = ImageCache::new(10 * 1024 * 1024);
+        let path = PathBuf::from("/test/image1.dcm");
+
+        cache.insert(path.clone(), make_test_image(64, 64));
+        let mem_after_first = cache.current_memory;
+
+        // Insert again with different dimensions
+        cache.insert(path.clone(), make_test_image(128, 128));
+
+        assert_eq!(cache.entries.len(), 1, "should still be one entry");
+        assert!(cache.current_memory > mem_after_first, "memory should reflect larger image");
+
+        let img = cache.get(&path).unwrap();
+        assert_eq!(img.width, 128);
+    }
+
+    #[test]
+    fn clear_empties_cache() {
+        let mut cache = ImageCache::new(10 * 1024 * 1024);
+
+        cache.insert(PathBuf::from("/test/a.dcm"), make_test_image(32, 32));
+        cache.insert(PathBuf::from("/test/b.dcm"), make_test_image(32, 32));
+
+        assert_eq!(cache.entries.len(), 2);
+
+        cache.clear();
+
+        assert_eq!(cache.entries.len(), 0);
+        assert_eq!(cache.current_memory, 0);
+        assert!(cache.pending_prefetch.is_empty());
+    }
+
+    #[test]
+    fn stats_reports_correctly() {
+        let mut cache = ImageCache::new(10 * 1024 * 1024);
+
+        cache.insert(PathBuf::from("/test/a.dcm"), make_test_image(32, 32));
+        cache.insert(PathBuf::from("/test/b.dcm"), make_test_image(32, 32));
+
+        let stats = cache.stats();
+        assert_eq!(stats.entries, 2);
+        assert_eq!(stats.max_memory_mb, 10);
+    }
+
+    #[test]
+    fn prefetch_series_does_not_panic() {
+        let mut cache = ImageCache::new(10 * 1024 * 1024);
+
+        // Prefetch with nonexistent paths - workers will fail to load but should not panic
+        let paths: Vec<PathBuf> = (0..5)
+            .map(|i| PathBuf::from(format!("/nonexistent/image{}.dcm", i)))
+            .collect();
+
+        cache.prefetch_series(&paths);
+
+        // Verify pending set was populated
+        assert_eq!(cache.pending_prefetch.len(), 5);
+
+        // Empty series should be fine too
+        cache.prefetch_series(&[]);
+    }
+
+    #[test]
+    fn prefetch_around_does_not_panic() {
+        let mut cache = ImageCache::new(10 * 1024 * 1024);
+
+        let paths: Vec<PathBuf> = (0..20)
+            .map(|i| PathBuf::from(format!("/nonexistent/image{}.dcm", i)))
+            .collect();
+
+        // Prefetch around middle index
+        cache.prefetch(&paths, 10);
+
+        // Should have queued some entries within the prefetch window
+        assert!(!cache.pending_prefetch.is_empty());
+    }
+
+    #[test]
+    fn process_prefetch_results_handles_empty_channel() {
+        let mut cache = ImageCache::new(10 * 1024 * 1024);
+
+        // Should not panic when no results are available
+        cache.process_prefetch_results();
+        assert_eq!(cache.entries.len(), 0);
+    }
+}

@@ -60,6 +60,13 @@ pub struct NccPartials {
     pub _padding: [u32; 2],
 }
 
+/// Volume data for GPU upload (normalized f32 voxels + geometry)
+pub struct VolumeUpload<'a> {
+    pub data: &'a [f32],
+    pub dims: (usize, usize, usize),
+    pub spacing: (f64, f64, f64),
+}
+
 /// GPU coregistration resources
 pub struct GpuCoregistration {
     /// Resample compute pipeline
@@ -274,33 +281,28 @@ impl GpuCoregistration {
     /// * `source_dims` - Source volume dimensions (width, height, depth)
     /// * `target_spacing` - Target voxel spacing in mm
     /// * `source_spacing` - Source voxel spacing in mm
-    #[allow(clippy::too_many_arguments)]
     pub fn upload_volumes(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        target: &[f32],
-        source: &[f32],
-        target_dims: (usize, usize, usize),
-        source_dims: (usize, usize, usize),
-        target_spacing: (f64, f64, f64),
-        source_spacing: (f64, f64, f64),
+        target: &VolumeUpload,
+        source: &VolumeUpload,
     ) {
-        let target_voxels = target_dims.0 * target_dims.1 * target_dims.2;
-        let source_voxels = source_dims.0 * source_dims.1 * source_dims.2;
-        assert_eq!(target.len(), target_voxels);
-        assert_eq!(source.len(), source_voxels);
+        let target_voxels = target.dims.0 * target.dims.1 * target.dims.2;
+        let source_voxels = source.dims.0 * source.dims.1 * source.dims.2;
+        assert_eq!(target.data.len(), target_voxels);
+        assert_eq!(source.data.len(), source_voxels);
 
-        self.target_dims = target_dims;
-        self.source_dims = source_dims;
-        self.target_spacing = target_spacing;
-        self.source_spacing = source_spacing;
+        self.target_dims = target.dims;
+        self.source_dims = source.dims;
+        self.target_spacing = target.spacing;
+        self.source_spacing = source.spacing;
 
         // Create target buffer
         self.target_buffer = Some(
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Target Volume"),
-                contents: bytemuck::cast_slice(target),
+                contents: bytemuck::cast_slice(target.data),
                 usage: wgpu::BufferUsages::STORAGE,
             }),
         );
@@ -309,7 +311,7 @@ impl GpuCoregistration {
         self.source_buffer = Some(
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Source Volume"),
-                contents: bytemuck::cast_slice(source),
+                contents: bytemuck::cast_slice(source.data),
                 usage: wgpu::BufferUsages::STORAGE,
             }),
         );
@@ -344,9 +346,9 @@ impl GpuCoregistration {
         // Update NCC uniforms (uses target dimensions since we compare in target space)
         let ncc_uniforms = NccUniforms {
             dims: [
-                target_dims.0 as u32,
-                target_dims.1 as u32,
-                target_dims.2 as u32,
+                self.target_dims.0 as u32,
+                self.target_dims.1 as u32,
+                self.target_dims.2 as u32,
                 0,
             ],
             num_voxels: target_voxels as u32,

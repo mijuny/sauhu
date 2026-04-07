@@ -1,5 +1,53 @@
 # Changelog
 
+## 2026-04-07 -- Roadmap to 10: Tier 2
+
+### Changed
+
+- **Split database_window.rs**: Broke the 2,139-line monolith into a directory
+  module with 4 files: `mod.rs` (orchestration, 282 lines),
+  `local_browser.rs` (study listing, 477), `pacs_query.rs` (C-FIND/C-MOVE, 728),
+  `anonymize.rs` (PHI stripping, 693).
+
+- **VolumeUpload struct**: Replaced 8-argument `upload_volumes()` in GPU
+  coregistration with a `VolumeUpload { data, dims, spacing }` struct that
+  pairs volume data with its geometry.
+
+- **GridContext struct**: Replaced 7-argument `show_grid()` in viewport manager
+  with a `GridContext` struct bundling active viewport, drops, reference lines,
+  and interaction mode.
+
+### Added
+
+- **72 new unit tests** (36 -> 108 total):
+  - `dicom/anonymize.rs`: 22 tests for UID generation, name/ID formatting,
+    accession numbers, config defaults, PHI tag coverage
+  - `dicom/mpr.rs`: 44 tests for volume geometry, trilinear interpolation,
+    anatomical plane methods, reslicing, the center-position invariant
+    (gantry tilt), and image plane computation
+  - `cache.rs`: 11 tests for insert/get, LRU eviction, stats, prefetch
+
+## 2026-04-07 -- Roadmap to 10: Tier 1
+
+### Changed
+
+- **Named tuples**: Replaced `(PathBuf, usize, usize, ViewportId, u64)` with
+  `ImageLoadRequest` struct in channels, pending lists, and function signatures.
+  Removed `#[allow(clippy::type_complexity)]` suppression.
+
+- **Channel error logging**: Added `tracing::warn` on channel send failures in
+  anonymization, retrieval, and quick fetch workflows. Silent `let _ = tx.send()`
+  retained only for shutdown-race cases.
+
+- **Dead code cleanup**: Removed blanket `#![allow(dead_code)]` from 38 files.
+  Replaced with targeted item-level `#[allow(dead_code)]` on specific items
+  with comments explaining why they are kept. WIP modules (fusion, IPC) and
+  utility libraries (spatial, db/schema) get module-level allows with comments.
+
+### Added
+
+- `src/app/interaction.rs`: Committed previously untracked file.
+
 ## 2026-04-07 21:12 -- Fix MPR reference lines and coregistration geometry
 
 ### Fixed

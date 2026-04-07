@@ -37,7 +37,7 @@ use sauhu::dicom::{
     group_files_by_series, AnatomicalPlane, DicomFile, DicomImage, ImagePlane, MprSeries, Point2D,
     Vec3, Volume,
 };
-use sauhu::gpu::GpuCoregistration;
+use sauhu::gpu::{GpuCoregistration, VolumeUpload};
 
 /// Window/level presets
 #[derive(Debug, Clone, Copy)]
@@ -1903,12 +1903,8 @@ fn cmd_coreg_gpu(args: &[String]) -> Result<()> {
     gpu_coreg.upload_volumes(
         &device,
         &queue,
-        &target_downsampled,
-        &source_downsampled,
-        target_ds_dims,
-        source_ds_dims,
-        target_ds_spacing,
-        source_ds_spacing,
+        &VolumeUpload { data: &target_downsampled, dims: target_ds_dims, spacing: target_ds_spacing },
+        &VolumeUpload { data: &source_downsampled, dims: source_ds_dims, spacing: source_ds_spacing },
     );
     println!("  Upload took: {:?}", upload_start.elapsed());
 
@@ -2011,12 +2007,8 @@ fn cmd_coreg_gpu(args: &[String]) -> Result<()> {
         gpu_coreg.upload_volumes(
             &device,
             &queue,
-            &target_level1,
-            &source_level1,
-            level1_dims,
-            level1_dims,
-            target_level1_spacing,
-            source_level1_spacing,
+            &VolumeUpload { data: &target_level1, dims: level1_dims, spacing: target_level1_spacing },
+            &VolumeUpload { data: &source_level1, dims: level1_dims, spacing: source_level1_spacing },
         );
 
         let level1_optimizer = PowellOptimizer::new(false).with_steps(0.15, 12.0);
@@ -2081,12 +2073,8 @@ fn cmd_coreg_gpu(args: &[String]) -> Result<()> {
         gpu_coreg.upload_volumes(
             &device,
             &queue,
-            &target_level2,
-            &source_level2,
-            level2_dims,
-            level2_dims,
-            target_level2_spacing,
-            source_level2_spacing,
+            &VolumeUpload { data: &target_level2, dims: level2_dims, spacing: target_level2_spacing },
+            &VolumeUpload { data: &source_level2, dims: level2_dims, spacing: source_level2_spacing },
         );
 
         let level2_optimizer = PowellOptimizer::new(false).with_steps(0.08, 6.0);
@@ -2134,12 +2122,8 @@ fn cmd_coreg_gpu(args: &[String]) -> Result<()> {
         gpu_coreg.upload_volumes(
             &device,
             &queue,
-            &target_downsampled,
-            &source_downsampled,
-            target_ds_dims,
-            source_ds_dims,
-            target_ds_spacing,
-            source_ds_spacing,
+            &VolumeUpload { data: &target_downsampled, dims: target_ds_dims, spacing: target_ds_spacing },
+            &VolumeUpload { data: &source_downsampled, dims: source_ds_dims, spacing: source_ds_spacing },
         );
 
         let level3_optimizer = PowellOptimizer::new(false).with_steps(0.03, 2.0);

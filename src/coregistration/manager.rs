@@ -6,7 +6,7 @@ use super::pipeline::{
 };
 use super::transform::RigidTransform;
 use crate::dicom::Volume;
-use crate::gpu::GpuCoregistration;
+use crate::gpu::{GpuCoregistration, VolumeUpload};
 use pollster::FutureExt;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -306,12 +306,8 @@ impl CoregistrationManager {
             gpu_coreg.upload_volumes(
                 &device,
                 &queue,
-                &target_level1,
-                &source_level1,
-                level1_dims,
-                level1_dims,
-                target_level1_geom.spacing,
-                source_level1_geom.spacing,
+                &VolumeUpload { data: &target_level1, dims: level1_dims, spacing: target_level1_geom.spacing },
+                &VolumeUpload { data: &source_level1, dims: level1_dims, spacing: source_level1_geom.spacing },
             );
 
             // Compute initial alignment using center-of-mass
@@ -361,12 +357,8 @@ impl CoregistrationManager {
             gpu_coreg.upload_volumes(
                 &device,
                 &queue,
-                &target_level2,
-                &source_level2,
-                level2_dims,
-                level2_dims,
-                target_level2_geom.spacing,
-                source_level2_geom.spacing,
+                &VolumeUpload { data: &target_level2, dims: level2_dims, spacing: target_level2_geom.spacing },
+                &VolumeUpload { data: &source_level2, dims: level2_dims, spacing: source_level2_geom.spacing },
             );
 
             let level2_optimizer = PowellOptimizer::new(false).with_steps(0.08, 6.0);
@@ -406,12 +398,8 @@ impl CoregistrationManager {
             gpu_coreg.upload_volumes(
                 &device,
                 &queue,
-                &target_level3,
-                &source_level3,
-                level3_dims,
-                level3_dims,
-                target_level3_geom.spacing,
-                source_level3_geom.spacing,
+                &VolumeUpload { data: &target_level3, dims: level3_dims, spacing: target_level3_geom.spacing },
+                &VolumeUpload { data: &source_level3, dims: level3_dims, spacing: source_level3_geom.spacing },
             );
 
             let level3_optimizer = PowellOptimizer::new(false).with_steps(0.03, 2.0);
