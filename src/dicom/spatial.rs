@@ -8,6 +8,10 @@
 //!
 //! All calculation logic lives here. The viewers (Sauhu UI, Claude sandbox)
 //! only handle rendering. This guarantees feature parity.
+//!
+//! Many functions here are not yet called from the main viewer but form
+//! the geometry library for upcoming viewport sync, reference lines,
+//! and measurement features.
 #![allow(dead_code)]
 
 use super::{ImagePlane, Point2D, ReferenceLine, Vec3};

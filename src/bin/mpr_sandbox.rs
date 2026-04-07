@@ -26,6 +26,7 @@
 use anyhow::{Context, Result};
 use image::{Rgb, RgbImage};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use sauhu::coregistration::{
     compute_initial_alignment, PowellOptimizer, PyramidSchedule, RegistrationConfig,
@@ -91,7 +92,7 @@ fn get_preset(name: &str) -> Option<WindowPreset> {
 /// Viewport state for rendering
 struct Viewport {
     /// DicomImage to display
-    image: Option<DicomImage>,
+    image: Option<Arc<DicomImage>>,
     /// Window center
     window_center: f64,
     /// Window width
@@ -113,7 +114,7 @@ impl Viewport {
         }
     }
 
-    fn set_image(&mut self, image: DicomImage) {
+    fn set_image(&mut self, image: Arc<DicomImage>) {
         self.window_center = image.window_center;
         self.window_width = image.window_width;
         self.image = Some(image);
@@ -863,7 +864,7 @@ fn cmd_compare(args: &[String]) -> Result<()> {
         let idx = slice_idx.unwrap_or(images.len() / 2);
         let idx = idx.min(images.len().saturating_sub(1));
 
-        let img = images[idx].clone();
+        let img = Arc::new(images[idx].clone());
         let series_desc = img
             .series_description
             .clone()

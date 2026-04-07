@@ -29,7 +29,6 @@
 //! // Get reformatted slice
 //! let slice = mpr.get_slice();
 //! ```
-#![allow(dead_code)]
 
 use super::{DicomImage, ImagePlane, SyncInfo, Vec3};
 use std::sync::Arc;
@@ -45,6 +44,47 @@ pub enum AnatomicalPlane {
     Sagittal,
     /// Original acquisition plane
     Original,
+}
+
+impl AnatomicalPlane {
+    /// Short abbreviation used in UI and sync matching
+    #[allow(dead_code)]
+    pub fn abbrev(&self) -> &'static str {
+        match self {
+            AnatomicalPlane::Axial => "Ax",
+            AnatomicalPlane::Coronal => "Cor",
+            AnatomicalPlane::Sagittal => "Sag",
+            AnatomicalPlane::Original => "Orig",
+        }
+    }
+
+    /// Full display name
+    pub fn full_name(&self) -> &'static str {
+        match self {
+            AnatomicalPlane::Axial => "Axial",
+            AnatomicalPlane::Coronal => "Coronal",
+            AnatomicalPlane::Sagittal => "Sagittal",
+            AnatomicalPlane::Original => "Original",
+        }
+    }
+
+    /// Parse from short abbreviation ("Ax", "Cor", "Sag")
+    #[allow(dead_code)]
+    pub fn from_abbrev(s: &str) -> Option<Self> {
+        match s {
+            "Ax" => Some(AnatomicalPlane::Axial),
+            "Cor" => Some(AnatomicalPlane::Coronal),
+            "Sag" => Some(AnatomicalPlane::Sagittal),
+            "Orig" => Some(AnatomicalPlane::Original),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for AnatomicalPlane {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.full_name())
+    }
 }
 
 /// Patient coordinate axes (LPS convention)
@@ -109,17 +149,6 @@ impl AcquisitionOrientation {
     }
 }
 
-impl std::fmt::Display for AnatomicalPlane {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            AnatomicalPlane::Axial => write!(f, "Axial"),
-            AnatomicalPlane::Coronal => write!(f, "Coronal"),
-            AnatomicalPlane::Sagittal => write!(f, "Sagittal"),
-            AnatomicalPlane::Original => write!(f, "Original"),
-        }
-    }
-}
-
 /// 3D volume constructed from a series of DICOM slices
 #[derive(Clone)]
 pub struct Volume {
@@ -175,8 +204,6 @@ pub struct Volume {
     pub original_slice_positions: Vec<f64>,
     /// Pixel representation (0 = unsigned, 1 = signed)
     pub pixel_representation: u16,
-    /// Whether this volume was created by coregistration (affects reference line calculation)
-    pub is_coregistered: bool,
 }
 
 impl Volume {
@@ -186,7 +213,8 @@ impl Volume {
     /// - From the same Frame of Reference
     /// - Parallel (same orientation)
     /// - Evenly spaced (or close to it)
-    pub fn from_series(images: &[DicomImage]) -> Option<Self> {
+    pub fn from_series(images: &[impl std::borrow::Borrow<DicomImage>]) -> Option<Self> {
+        let images: Vec<&DicomImage> = images.iter().map(|i| i.borrow()).collect();
         if images.len() < 2 {
             tracing::debug!("Volume requires at least 2 slices, got {}", images.len());
             return None;
@@ -357,12 +385,12 @@ impl Volume {
             study_description: first_image.study_description.clone(),
             original_slice_positions,
             pixel_representation: first_image.pixel_representation,
-            is_coregistered: false,
         })
     }
 
     /// Get voxel value at integer coordinates (bounds checked)
     #[inline]
+    #[allow(dead_code)]
     pub fn get_voxel(&self, x: usize, y: usize, z: usize) -> u16 {
         let (w, h, d) = self.dimensions;
         if x < w && y < h && z < d {
@@ -410,6 +438,7 @@ impl Volume {
     }
 
     /// Get the volume extent (min, max) along a patient axis in mm
+    #[allow(dead_code)]
     pub fn get_axis_extent(&self, axis: PatientAxis) -> (f64, f64) {
         let (dir, spacing, _sign) = self.get_axis_direction(axis);
         let (w, h, d) = self.dimensions;
@@ -482,6 +511,7 @@ impl Volume {
 
     /// Trilinear interpolation for smooth sampling
     #[inline]
+    #[allow(dead_code)]
     fn sample_trilinear(&self, x: f64, y: f64, z: f64) -> u16 {
         let (w, h, d) = self.dimensions;
 
@@ -529,6 +559,7 @@ impl Volume {
     }
 
     /// Get volume extent in mm for each dimension
+    #[allow(dead_code)]
     pub fn extent_mm(&self) -> (f64, f64, f64) {
         let (w, h, d) = self.dimensions;
         let (sx, sy, sz) = self.spacing;
@@ -699,8 +730,16 @@ impl Volume {
                         let out_height = w;
                         let mut pixels = Vec::with_capacity(out_width * out_height);
 
+                        // Reverse X if slice_direction.x > 0 (depth increases in +X),
+                        // so that patient-left appears on screen-right (radiological convention)
+                        let (_, _, x_sign) = self.get_axis_direction(PatientAxis::X);
+                        let x_iter: Vec<usize> = if x_sign > 0.0 {
+                            (0..d).rev().collect()
+                        } else {
+                            (0..d).collect()
+                        };
                         for col_y in 0..w {
-                            for slice_x in (0..d).rev() {
+                            for &slice_x in &x_iter {
                                 let idx = slice_x * w * h + row_idx * w + col_y;
                                 pixels.push(self.data[idx]);
                             }
@@ -759,8 +798,15 @@ impl Volume {
                         let out_height = d;
                         let mut pixels = Vec::with_capacity(out_width * out_height);
 
-                        // Z from high to low (superior at top)
-                        for z in (0..d).rev() {
+                        // Reverse Z if slice_direction.z > 0 (depth increases in +Z = superior),
+                        // so that superior appears at pixel row 0 (top of image)
+                        let (_, _, z_sign) = self.get_axis_direction(PatientAxis::Z);
+                        let z_iter: Vec<usize> = if z_sign > 0.0 {
+                            (0..d).rev().collect()
+                        } else {
+                            (0..d).collect()
+                        };
+                        for &z in &z_iter {
                             let slice_start = z * w * h;
                             let row_start = slice_start + row_idx * w;
                             for x in 0..w {
@@ -802,8 +848,14 @@ impl Volume {
                         let out_height = h;
                         let mut pixels = Vec::with_capacity(out_width * out_height);
 
+                        let (_, _, x_sign) = self.get_axis_direction(PatientAxis::X);
+                        let x_iter: Vec<usize> = if x_sign > 0.0 {
+                            (0..d).rev().collect()
+                        } else {
+                            (0..d).collect()
+                        };
                         for row_z in 0..h {
-                            for slice_x in (0..d).rev() {
+                            for &slice_x in &x_iter {
                                 let idx = slice_x * w * h + row_z * w + col_idx;
                                 pixels.push(self.data[idx]);
                             }
@@ -862,8 +914,14 @@ impl Volume {
                         let out_height = d;
                         let mut pixels = Vec::with_capacity(out_width * out_height);
 
-                        // Z from high to low (superior at top)
-                        for z in (0..d).rev() {
+                        // Reverse Z if slice_direction.z > 0, so superior at top
+                        let (_, _, z_sign) = self.get_axis_direction(PatientAxis::Z);
+                        let z_iter: Vec<usize> = if z_sign > 0.0 {
+                            (0..d).rev().collect()
+                        } else {
+                            (0..d).collect()
+                        };
+                        for &z in &z_iter {
                             let slice_start = z * w * h;
                             for y in 0..h {
                                 let idx = slice_start + y * w + col_idx;
@@ -892,6 +950,7 @@ impl Volume {
     }
 
     /// Find slice index closest to given position in mm
+    #[allow(dead_code)]
     pub fn position_to_slice(&self, plane: AnatomicalPlane, position_mm: f64) -> usize {
         let count = self.slice_count(plane);
         let spacing = match plane {
@@ -947,10 +1006,19 @@ impl ReformattedSlice {
         // Get the volume direction that corresponds to each patient axis
         let (x_dir, x_spacing, _x_sign) = volume.get_axis_direction(PatientAxis::X);
         let (y_dir, y_spacing, _y_sign) = volume.get_axis_direction(PatientAxis::Y);
-        let (z_dir, z_spacing, _z_sign) = volume.get_axis_direction(PatientAxis::Z);
+        let (z_dir, z_spacing, z_sign) = volume.get_axis_direction(PatientAxis::Z);
 
         // Calculate the volume's extent to find corner positions
         // For each plane, we need to position the slice at the correct corner
+        //
+        // The resample always puts superior at pixel row 0. The ImagePlane must match:
+        // - position at the superior end of the Z range (top-left corner)
+        // - col_direction pointing inferior (pixel y increases going down)
+        //
+        // When z_sign > 0: z increases toward superior, so the superior end is at
+        //   origin + z_dir * z_extent. col_dir = z_dir.negate() (toward inferior).
+        // When z_sign < 0: z decreases toward superior, so origin is already at
+        //   the superior end. col_dir = z_dir (which points inferior since z_dir.z < 0).
         let (row_dir, col_dir, normal, position) = match self.plane {
             AnatomicalPlane::Axial | AnatomicalPlane::Original => {
                 // Axial: slices perpendicular to Z axis
@@ -965,15 +1033,10 @@ impl ReformattedSlice {
             AnatomicalPlane::Coronal => {
                 // Coronal: slices perpendicular to Y axis
                 // Row direction: along X (left-right)
-                // Col direction: along -Z (head-up display, superior at top)
+                // Col direction: toward inferior (superior at top)
                 // Normal: along Y (anterior-posterior)
-                // Position: need to be at (origin_x, slice_y, origin_z + max_z_extent)
-                //           i.e., top-left corner of the coronal slice
                 let slice_offset = y_dir.scale(slice_index as f64 * y_spacing);
 
-                // Start from origin, add slice offset along Y
-                // Also need to offset to the TOP of the volume (max Z direction)
-                // The col_dir will be negated z_dir, so we need to start at max Z
                 let (_w, h, d) = volume.dimensions;
                 let z_extent = match volume.acquisition_orientation {
                     AcquisitionOrientation::Axial => d as f64 * volume.spacing.2,
@@ -981,21 +1044,25 @@ impl ReformattedSlice {
                     AcquisitionOrientation::Sagittal => h as f64 * volume.spacing.1,
                     AcquisitionOrientation::Unknown => d as f64 * volume.spacing.2,
                 };
-                let z_offset = z_dir.scale(z_extent);
 
-                let pos = volume.origin.add(&slice_offset).add(&z_offset);
-                (x_dir, z_dir.negate(), y_dir, pos)
+                if z_sign > 0.0 {
+                    // z increases toward superior: offset to top, col goes down
+                    let z_offset = z_dir.scale(z_extent);
+                    let pos = volume.origin.add(&slice_offset).add(&z_offset);
+                    (x_dir, z_dir.negate(), y_dir, pos)
+                } else {
+                    // z decreases toward superior: origin is at top, col = z_dir (goes inferior)
+                    let pos = volume.origin.add(&slice_offset);
+                    (x_dir, z_dir, y_dir, pos)
+                }
             }
             AnatomicalPlane::Sagittal => {
                 // Sagittal: slices perpendicular to X axis
                 // Row direction: along Y (anterior-posterior)
-                // Col direction: along -Z (head-up display)
+                // Col direction: toward inferior (superior at top)
                 // Normal: along X (left-right)
-                // Position: need to be at (slice_x, origin_y, origin_z + max_z_extent)
                 let slice_offset = x_dir.scale(slice_index as f64 * x_spacing);
 
-                // Start from origin, add slice offset along X
-                // Also need to offset to the TOP of the volume (max Z direction)
                 let (_w, h, d) = volume.dimensions;
                 let z_extent = match volume.acquisition_orientation {
                     AcquisitionOrientation::Axial => d as f64 * volume.spacing.2,
@@ -1003,10 +1070,15 @@ impl ReformattedSlice {
                     AcquisitionOrientation::Sagittal => h as f64 * volume.spacing.1,
                     AcquisitionOrientation::Unknown => d as f64 * volume.spacing.2,
                 };
-                let z_offset = z_dir.scale(z_extent);
 
-                let pos = volume.origin.add(&slice_offset).add(&z_offset);
-                (y_dir, z_dir.negate(), x_dir, pos)
+                if z_sign > 0.0 {
+                    let z_offset = z_dir.scale(z_extent);
+                    let pos = volume.origin.add(&slice_offset).add(&z_offset);
+                    (y_dir, z_dir.negate(), x_dir, pos)
+                } else {
+                    let pos = volume.origin.add(&slice_offset);
+                    (y_dir, z_dir, x_dir, pos)
+                }
             }
         };
 
@@ -1056,6 +1128,7 @@ impl ReformattedSlice {
     }
 
     /// Get slice location for sync purposes (distance along normal from origin)
+    #[allow(dead_code)]
     pub fn slice_location(&self) -> f64 {
         self.slice_position_mm
     }
@@ -1123,8 +1196,8 @@ impl ReformattedSlice {
 pub struct MprSeries {
     /// Plane this series represents
     pub plane: AnatomicalPlane,
-    /// Pre-generated DicomImages for each slice
-    pub images: Vec<DicomImage>,
+    /// Pre-generated DicomImages for each slice (Arc to avoid cloning pixel data)
+    pub images: Vec<Arc<DicomImage>>,
     /// Synthetic paths for GPU cache (e.g., "mpr://coronal/0", "mpr://coronal/1")
     pub paths: Vec<std::path::PathBuf>,
     /// Sync info for this MPR series (enables sync with other viewports)
@@ -1150,12 +1223,10 @@ impl MprSeries {
             AnatomicalPlane::Original => "original",
         };
 
-        // Map plane to orientation string for sync matching
-        let orientation: Option<&'static str> = match plane {
-            AnatomicalPlane::Axial => Some("Ax"),
-            AnatomicalPlane::Coronal => Some("Cor"),
-            AnatomicalPlane::Sagittal => Some("Sag"),
+        // Map plane to orientation for sync matching
+        let orientation: Option<AnatomicalPlane> = match plane {
             AnatomicalPlane::Original => None, // Could detect from volume
+            other => Some(other),
         };
 
         tracing::info!(
@@ -1207,7 +1278,7 @@ impl MprSeries {
                     );
                 }
 
-                images.push(dicom_image);
+                images.push(Arc::new(dicom_image));
                 // Use synthetic path for GPU cache key
                 paths.push(std::path::PathBuf::from(format!(
                     "mpr://{}/{}",
@@ -1275,6 +1346,7 @@ impl MprSeries {
     }
 
     /// Check if empty
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.images.is_empty()
     }
@@ -1359,6 +1431,7 @@ impl MprState {
 
     /// Generate and cache the full MPR series for the current plane
     /// Returns the generated series for GPU upload
+    #[allow(dead_code)]
     pub fn generate_series(&mut self) -> Option<Arc<MprSeries>> {
         if let Some(vol) = &self.volume {
             if let Some(series) = MprSeries::generate(vol, self.plane) {
@@ -1384,7 +1457,8 @@ impl MprState {
     }
 
     /// Get image at current slice index from pre-generated series
-    pub fn get_series_image(&self) -> Option<&DicomImage> {
+    #[allow(dead_code)]
+    pub fn get_series_image(&self) -> Option<&Arc<DicomImage>> {
         self.mpr_series
             .as_ref()
             .and_then(|s| s.images.get(self.slice_index))
@@ -1398,6 +1472,7 @@ impl MprState {
     }
 
     /// Navigate to a specific slice
+    #[allow(dead_code)]
     pub fn set_slice(&mut self, index: usize) {
         if let Some(vol) = &self.volume {
             let max = vol.slice_count(self.plane).saturating_sub(1);
@@ -1419,6 +1494,7 @@ impl MprState {
     }
 
     /// Get current slice count for the active plane
+    #[allow(dead_code)]
     pub fn slice_count(&self) -> usize {
         self.volume
             .as_ref()

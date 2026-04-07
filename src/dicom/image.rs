@@ -1,5 +1,4 @@
 //! DICOM pixel data extraction and image processing
-#![allow(dead_code)]
 
 use super::{spatial::ROIStats, DicomFile, ImagePlane};
 use anyhow::{Context, Result};
@@ -28,10 +27,13 @@ pub struct DicomImage {
     /// Modality
     pub modality: Option<String>,
     /// Min pixel value (for windowing)
+    #[allow(dead_code)]
     pub min_value: f64,
     /// Max pixel value (for windowing)
+    #[allow(dead_code)]
     pub max_value: f64,
     /// Whether to invert display (MONOCHROME1)
+    #[allow(dead_code)]
     pub invert: bool,
     /// Image plane geometry for reference line calculations
     pub image_plane: Option<ImagePlane>,
@@ -491,6 +493,7 @@ impl DicomImage {
 }
 
 /// Extract pixels via DynamicImage conversion (handles all formats)
+#[allow(dead_code)]
 fn extract_from_dynamic_image(
     pixel_data: &dicom_pixeldata::DecodedPixelData,
 ) -> Result<(Vec<u16>, f64, f64)> {
@@ -776,6 +779,7 @@ pub const CT_PRESETS: &[WindowPreset] = &[
     },
 ];
 
+#[allow(dead_code)]
 pub const MR_PRESETS: &[WindowPreset] = &[
     WindowPreset {
         name: "T1",

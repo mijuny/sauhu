@@ -2,6 +2,8 @@
 //!
 //! Provides a Unix socket server for external applications (like Sanelu)
 //! to communicate with Sauhu.
+
+// WIP: IPC protocol is defined but client integration is pending
 #![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};

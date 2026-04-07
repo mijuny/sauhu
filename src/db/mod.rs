@@ -1,7 +1,6 @@
 //! Database module for Sauhu
 //!
 //! Handles SQLite database for storing studies, series, and measurements.
-#![allow(dead_code)]
 
 mod schema;
 
@@ -17,6 +16,7 @@ pub use schema::*;
 #[derive(Clone)]
 pub struct Database {
     conn: Arc<Mutex<Connection>>,
+    #[allow(dead_code)] // useful for diagnostics
     pub path: PathBuf,
 }
 
@@ -53,6 +53,7 @@ impl Database {
     }
 
     /// Execute a database operation with the connection
+    #[allow(dead_code)] // part of DB API
     pub fn with_conn<F, T>(&self, f: F) -> Result<T>
     where
         F: FnOnce(&Connection) -> Result<T>,
@@ -65,6 +66,7 @@ impl Database {
     }
 
     /// Execute a mutable database operation
+    #[allow(dead_code)] // part of DB API
     pub fn with_conn_mut<F, T>(&self, f: F) -> Result<T>
     where
         F: FnOnce(&mut Connection) -> Result<T>,

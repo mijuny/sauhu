@@ -186,27 +186,35 @@ For orthogonal planes, the intersection is a straight line:
 - Sagittal slice intersects Axial as a **vertical** line
 - Coronal slice intersects Axial as a **horizontal** line
 
-### Implementation: Use Slice Index, Not Z Coordinate
+### Two Code Paths
 
-**Critical insight**: Reference lines should map slice INDEX to pixel position, not Z coordinate.
+**1. Geometry-based (`ImagePlane::intersect`)** in `calculate_reference_lines()`:
+Used for cross-volume reference lines (e.g., MPR to original series, coregistered
+to target). Projects the active plane through 3D patient coordinates and finds
+where it crosses the other viewport's image edges. This is the primary path and
+handles arbitrary orientations.
 
-```rust
-// CORRECT: Direct index mapping
-(AnatomicalPlane::Axial, AnatomicalPlane::Sagittal) => {
-    let max_index = axial_slice_count - 1;
-    let y_normalized = active_index as f64 / max_index as f64;
-    let y = y_normalized * other_height;
-    // Horizontal line at y
-}
+**2. Index-based** in `calculate_mpr_reference_lines()`:
+Used for MPR-to-MPR within the same volume (`Arc::ptr_eq`). Maps slice index
+directly to pixel position. Only fires when both viewports share the same
+`Arc<Volume>`.
 
-// WRONG: Z coordinate conversion (inverts for negative z_dir)
-let z = origin.z + index * z_spacing * z_dir.z;  // Don't do this!
-let y = (z_max - z) / z_range * height;
-```
+### Critical: Resample and ImagePlane Must Agree
 
-The Z-coordinate approach fails because:
-- For sagittal-acquired volumes, `z_dir.z` may be negative
-- This causes the formula to invert: scrolling UP moves line DOWN
+The `resample()` function produces pixel data with a specific layout (which end
+is at row 0). The `compute_image_plane()` function describes that layout in 3D
+patient coordinates. If they disagree, `ImagePlane::intersect()` computes
+reference line positions that don't match the displayed anatomy.
+
+The key variable is `z_sign` from `get_axis_direction(PatientAxis::Z)`:
+
+| z_sign | Volume z=0 | Superior at pixel row 0 via | ImagePlane position |
+|--------|------------|----------------------------|---------------------|
+| > 0 | inferior | `(0..d).rev()` | origin + z_offset (far end) |
+| < 0 | superior | forward `(0..d)` | origin (near end) |
+
+Both `resample()` and `compute_image_plane()` check `z_sign` and handle each
+case so that pixel row 0 always corresponds to the superior end of the Z range.
 
 ### Reference Line Colors
 
@@ -222,9 +230,12 @@ The Z-coordinate approach fails because:
 **Fix**: Always compute center position using ImageOrientationPatient
 
 ### 2. Reference Line Inversion
-**Symptom**: Scrolling UP in axial moves reference line DOWN in sagittal
-**Cause**: Using Z-coordinate conversion with negative z_dir
-**Fix**: Use slice index directly for reference line positioning
+**Symptom**: Scrolling UP in axial moves reference line DOWN in coronal/sagittal
+**Cause**: `resample()` and `compute_image_plane()` disagree about pixel layout.
+The resample hardcodes a z-iteration order, but the ImagePlane derives directions
+from the raw volume geometry. When `slice_direction.z < 0`, the two disagree.
+**Fix**: Both must check `z_sign` and handle each case consistently. See the
+"Resample and ImagePlane Must Agree" section above.
 
 ### 3. Wrong Pixel Spacing Convention
 **Symptom**: Images appear stretched or sync is slightly off
@@ -261,7 +272,12 @@ When modifying MPR or sync code, verify:
 
 ## History
 
-This implementation was debugged and fixed in January 2026. Key lessons:
+**January 2026**: Initial MPR implementation. Key lessons:
 1. Gantry tilt correction is essential for brain MRI sync
-2. Reference lines must use index-based mapping, not coordinate conversion
-3. Both regular series and MPR must use consistent center-based slice locations
+2. Both regular series and MPR must use consistent center-based slice locations
+
+**April 2026**: Fixed reference line inversion. Key lessons:
+3. Resample pixel layout and ImagePlane geometry must agree on z-axis direction
+4. The `z_sign` from `get_axis_direction(PatientAxis::Z)` determines whether
+   z-index increases toward superior (> 0) or inferior (< 0)
+5. Never hardcode iteration order; always derive from volume geometry

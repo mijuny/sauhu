@@ -2,6 +2,8 @@
 //!
 //! Enables overlay of two co-registered series in a single viewport.
 //! Supports alpha blending (Phase 1), color overlay (Phase 2), and checkerboard (Phase 3).
+
+// WIP: fusion rendering is implemented but not yet wired into the viewport
 #![allow(dead_code)]
 
 pub mod colormap;

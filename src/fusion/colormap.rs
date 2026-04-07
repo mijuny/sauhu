@@ -4,7 +4,6 @@
 //! The actual rendering uses inline WGSL functions in fusion.wgsl,
 //! but these CPU-side definitions are kept for testing and potential
 //! texture-based LUT upload in the future.
-#![allow(dead_code)]
 
 /// A single colormap entry (RGBA, 0-255)
 #[derive(Debug, Clone, Copy)]

@@ -1,11 +1,31 @@
-#![allow(dead_code)]
 
 use crate::dicom::{DicomImage, SyncInfo};
 use crate::gpu::DicomRenderResources;
 use crate::ui::ViewportId;
 use std::path::PathBuf;
+use std::sync::mpsc::{Receiver, Sender};
+use std::sync::Arc;
 
 use super::SauhuApp;
+
+/// Request to load a single DICOM image from disk
+#[derive(Debug, Clone)]
+pub(super) struct ImageLoadRequest {
+    pub(super) path: PathBuf,
+    pub(super) index: usize,
+    pub(super) total: usize,
+    pub(super) viewport_id: ViewportId,
+    pub(super) generation: u64,
+}
+
+/// Image loading system state
+pub(super) struct ImageLoadingSystem {
+    pub(super) pending_files: Option<Vec<PathBuf>>,
+    pub(super) load_receiver: Receiver<LoadResult>,
+    pub(super) load_sender: Sender<ImageLoadRequest>,
+    pub(super) patient_generation: u64,
+    pub(super) loading: bool,
+}
 
 /// Result of async image loading
 #[allow(clippy::large_enum_variant)]
@@ -30,6 +50,7 @@ pub(super) enum LoadResult {
 
 /// Context for what to do after a background scan completes
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub(super) enum ScanContext {
     /// Loading a folder opened by user
     LoadFolder,
@@ -54,11 +75,11 @@ impl SauhuApp {
         }
 
         self.status = format!("Validating {} file(s)...", paths.len());
-        self.bg_loading_state = super::background::BackgroundLoadingState::ScanningDirectory {
+        self.background.loading_state = super::background::BackgroundLoadingState::ScanningDirectory {
             path: "files".to_string(),
         };
         let _ = self
-            .bg_request_tx
+            .background.request_tx
             .send(super::background::BackgroundRequest::ValidateFiles { paths, viewport_id });
     }
 
@@ -66,7 +87,7 @@ impl SauhuApp {
     pub(super) fn handle_files_validated(&mut self, paths: Vec<PathBuf>, viewport_id: ViewportId) {
         if !paths.is_empty() {
             // Prefetch entire series to cache for smooth scrolling
-            self.image_cache.prefetch_series(&paths);
+            self.background.image_cache.prefetch_series(&paths);
 
             let start_at_middle = self.settings.viewer.start_at_middle_slice;
             self.viewport_manager.load_series(
@@ -93,19 +114,20 @@ impl SauhuApp {
     /// Load folder (async - uses background worker)
     pub(super) fn load_folder(&mut self, path: &PathBuf) {
         self.status = format!("Scanning {:?}...", path);
-        self.bg_loading_state = super::background::BackgroundLoadingState::ScanningDirectory {
+        self.background.loading_state = super::background::BackgroundLoadingState::ScanningDirectory {
             path: path.to_string_lossy().to_string(),
         };
-        let _ = self.bg_request_tx.send(super::background::BackgroundRequest::ScanDirectory {
+        let _ = self.background.request_tx.send(super::background::BackgroundRequest::ScanDirectory {
             path: path.clone(),
             context: ScanContext::LoadFolder,
         });
     }
 
     /// Load folder to a specific viewport (async - for hanging protocol assignment)
+    #[allow(dead_code)]
     pub(super) fn load_folder_to_viewport(&mut self, path: &PathBuf, viewport_id: ViewportId) {
         self.status = format!("Scanning {:?}...", path);
-        let _ = self.bg_request_tx.send(super::background::BackgroundRequest::ScanDirectory {
+        let _ = self.background.request_tx.send(super::background::BackgroundRequest::ScanDirectory {
             path: path.clone(),
             context: ScanContext::LoadToViewport { viewport_id },
         });
@@ -142,7 +164,7 @@ impl SauhuApp {
         );
 
         // Prefetch entire series to cache for smooth scrolling
-        self.image_cache.prefetch_series(&files);
+        self.background.image_cache.prefetch_series(&files);
 
         // Load series into viewport manager
         let start_at_middle = self.settings.viewer.start_at_middle_slice;
@@ -183,7 +205,7 @@ impl SauhuApp {
                                 .copied()
                                 .flatten();
                             (
-                                img.clone(),
+                                Arc::clone(img),
                                 slot.viewport.window_level(),
                                 sync_loc,
                                 img.slice_location,
@@ -203,7 +225,7 @@ impl SauhuApp {
                     viewport_id, old_idx, index, sync_loc, img_loc,
                     slot.mpr_state.mpr_series.as_ref().map(|s| s.len()).unwrap_or(0));
                 slot.mpr_state.slice_index = index;
-                slot.viewport.set_image_keep_view(image.clone());
+                slot.viewport.set_image_keep_view(image);
                 slot.viewport.set_window(wc, ww);
                 // Verify the displayed image matches
                 let displayed_loc = slot.viewport.image().and_then(|i| i.slice_location);
@@ -248,28 +270,28 @@ impl SauhuApp {
                 let total = slot.series_files.len();
 
                 // Check cache first
-                if self.image_cache.contains(&path) {
+                if self.background.image_cache.contains(&path) {
                     // Queue for processing in update() where we have frame access for GPU texture
                     tracing::debug!("Cache hit for {:?}", path.file_name().unwrap_or_default());
-                    self.pending_cache_hits.push((
+                    self.pending_cache_hits.push(ImageLoadRequest {
                         path,
                         index,
                         total,
                         viewport_id,
-                        self.patient_generation,
-                    ));
+                        generation: self.image_loading.patient_generation,
+                    });
                 } else {
                     // Cache miss - load from disk
                     tracing::debug!("Cache miss for {:?}", path.file_name().unwrap_or_default());
-                    self.loading = true;
+                    self.image_loading.loading = true;
                     self.status = format!("Loading [{}/{}]...", index + 1, total);
-                    let _ = self.load_sender.send((
+                    let _ = self.image_loading.load_sender.send(ImageLoadRequest {
                         path,
                         index,
                         total,
                         viewport_id,
-                        self.patient_generation,
-                    ));
+                        generation: self.image_loading.patient_generation,
+                    });
                 }
             }
         }
@@ -285,8 +307,8 @@ impl SauhuApp {
 
     /// Check for loaded images from background thread
     pub(super) fn check_loaded_images(&mut self, frame: &eframe::Frame) {
-        while let Ok(result) = self.load_receiver.try_recv() {
-            self.loading = false;
+        while let Ok(result) = self.image_loading.load_receiver.try_recv() {
+            self.image_loading.loading = false;
             match result {
                 LoadResult::Success {
                     image,
@@ -299,11 +321,11 @@ impl SauhuApp {
                     generation,
                 } => {
                     // Discard stale results from previous patient
-                    if generation != self.patient_generation {
+                    if generation != self.image_loading.patient_generation {
                         tracing::debug!(
                             "Discarding stale load result (gen {} vs current {})",
                             generation,
-                            self.patient_generation
+                            self.image_loading.patient_generation
                         );
                         continue;
                     }
@@ -318,8 +340,11 @@ impl SauhuApp {
                         image.slice_location
                     );
 
-                    // Add to image cache before applying
-                    self.image_cache.insert(path.clone(), image.clone());
+                    // Add to image cache (wraps in Arc internally)
+                    self.background.image_cache.insert(path.clone(), image);
+
+                    // Get Arc reference back from cache
+                    let image = self.background.image_cache.get(&path).expect("just inserted");
 
                     // Upload texture to GPU cache if available
                     if self.gpu_available {
@@ -378,7 +403,7 @@ impl SauhuApp {
                     generation,
                 } => {
                     // Discard stale results from previous patient
-                    if generation != self.patient_generation {
+                    if generation != self.image_loading.patient_generation {
                         continue;
                     }
 
@@ -408,13 +433,13 @@ impl SauhuApp {
     pub(super) fn process_cache_hits(&mut self, frame: &eframe::Frame) {
         let hits: Vec<_> = self.pending_cache_hits.drain(..).collect();
 
-        for (path, index, total, viewport_id, generation) in hits {
+        for ImageLoadRequest { path, index, total, viewport_id, generation } in hits {
             // Discard stale cache hits from previous patient
-            if generation != self.patient_generation {
+            if generation != self.image_loading.patient_generation {
                 tracing::debug!(
                     "Discarding stale cache hit (gen {} vs current {})",
                     generation,
-                    self.patient_generation
+                    self.image_loading.patient_generation
                 );
                 continue;
             }
@@ -435,7 +460,7 @@ impl SauhuApp {
             }
 
             // Get image from CPU cache (for viewport state, even if GPU cached)
-            if let Some(image) = self.image_cache.get_clone(&path) {
+            if let Some(image) = self.background.image_cache.get(&path) {
                 tracing::debug!(
                     "Applying cached image for viewport {}: ({}/{}) gpu_cached={}",
                     viewport_id,

@@ -1,12 +1,12 @@
 //! Similarity metrics for image registration
 //!
 //! CPU implementations as reference; GPU versions in shaders.
-#![allow(dead_code)]
 
 /// Normalized Cross-Correlation (NCC)
 ///
 /// Range: [-1, 1], where 1 = perfect positive correlation
 /// Good for same-modality registration (CT-CT, MRI-MRI)
+#[allow(dead_code)] // coregistration metrics API
 pub fn ncc(target: &[f32], source: &[f32]) -> f64 {
     if target.len() != source.len() || target.is_empty() {
         return 0.0;
@@ -44,6 +44,7 @@ pub fn ncc(target: &[f32], source: &[f32]) -> f64 {
 /// Sum of Squared Differences (SSD)
 ///
 /// Lower is better. Simple but sensitive to intensity differences.
+#[allow(dead_code)] // coregistration metrics API
 pub fn ssd(target: &[f32], source: &[f32]) -> f64 {
     if target.len() != source.len() {
         return f64::MAX;
@@ -60,6 +61,7 @@ pub fn ssd(target: &[f32], source: &[f32]) -> f64 {
 }
 
 /// Normalized SSD (0-1 range, lower is better)
+#[allow(dead_code)] // coregistration metrics API
 pub fn normalized_ssd(target: &[f32], source: &[f32]) -> f64 {
     if target.len() != source.len() || target.is_empty() {
         return 1.0;
@@ -94,6 +96,7 @@ pub fn normalized_ssd(target: &[f32], source: &[f32]) -> f64 {
 ///
 /// Range: [0, inf), higher is better
 /// Good for cross-modality registration (CT-MRI)
+#[allow(dead_code)] // coregistration metrics API
 pub fn mutual_information(target: &[f32], source: &[f32], num_bins: usize) -> f64 {
     if target.len() != source.len() || target.is_empty() {
         return 0.0;
@@ -160,6 +163,7 @@ pub fn mutual_information(target: &[f32], source: &[f32], num_bins: usize) -> f6
 ///
 /// Range: [1, 2] typically, where 2 = identical images
 /// More robust than MI to overlap changes
+#[allow(dead_code)] // coregistration metrics API
 pub fn normalized_mutual_information(target: &[f32], source: &[f32], num_bins: usize) -> f64 {
     if target.len() != source.len() || target.is_empty() {
         return 1.0;
@@ -232,6 +236,7 @@ pub fn normalized_mutual_information(target: &[f32], source: &[f32], num_bins: u
 }
 
 /// Find min and max intensity values
+#[allow(dead_code)] // used by MI/NMI metric functions
 fn intensity_range(data: &[f32]) -> (f64, f64) {
     let mut min = f64::MAX;
     let mut max = f64::MIN;
@@ -251,6 +256,7 @@ fn intensity_range(data: &[f32]) -> (f64, f64) {
 
 /// Metric type for registration
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // coregistration metrics API
 pub enum MetricType {
     /// Normalized Cross-Correlation (for same modality)
     Ncc,
@@ -264,6 +270,7 @@ pub enum MetricType {
 
 impl MetricType {
     /// Compute metric value
+    #[allow(dead_code)] // coregistration metrics API
     pub fn compute(&self, target: &[f32], source: &[f32]) -> f64 {
         match self {
             MetricType::Ncc => ncc(target, source),
@@ -274,6 +281,7 @@ impl MetricType {
     }
 
     /// Is higher better for this metric?
+    #[allow(dead_code)] // coregistration metrics API
     pub fn higher_is_better(&self) -> bool {
         true // All metrics normalized so higher = better
     }

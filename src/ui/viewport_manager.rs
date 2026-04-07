@@ -1,7 +1,6 @@
 //! Multi-viewport manager
 //!
 //! Manages multiple viewports with different layouts and synchronized scrolling.
-#![allow(dead_code)]
 
 use crate::dicom::{
     AnatomicalPlane, DicomImage, MprState, PatientAxis, Point2D, ReferenceLine, SyncInfo,
@@ -74,6 +73,7 @@ pub struct ViewportSlot {
     pub series_name: String,
     pub sync_info: Option<SyncInfo>,
     /// GPU texture slot index
+    #[allow(dead_code)] // reserved for GPU texture management
     pub texture_slot: usize,
     /// MPR (Multi-Planar Reconstruction) state
     pub mpr_state: MprState,
@@ -99,6 +99,7 @@ impl ViewportSlot {
         }
     }
 
+    #[allow(dead_code)]
     pub fn has_series(&self) -> bool {
         !self.series_files.is_empty()
     }
@@ -107,16 +108,19 @@ impl ViewportSlot {
         self.series_files.get(self.current_index)
     }
 
+    #[allow(dead_code)]
     pub fn image_count(&self) -> usize {
         self.series_files.len()
     }
 
     /// Check if MPR mode is active
+    #[allow(dead_code)]
     pub fn is_mpr_active(&self) -> bool {
         self.mpr_state.is_active()
     }
 
     /// Get current slice count (MPR or original)
+    #[allow(dead_code)]
     pub fn slice_count(&self) -> usize {
         if self.mpr_state.is_active() {
             self.mpr_state.slice_count()
@@ -126,6 +130,7 @@ impl ViewportSlot {
     }
 
     /// Get current slice index (MPR or original)
+    #[allow(dead_code)]
     pub fn current_slice_index(&self) -> usize {
         if self.mpr_state.is_active() {
             self.mpr_state.slice_index
@@ -167,6 +172,7 @@ pub struct ViewportResponse {
 }
 
 impl ViewportResponse {
+    #[allow(dead_code)]
     fn new() -> Self {
         Self {
             clicked: false,
@@ -204,6 +210,7 @@ pub struct ViewportManager {
     /// Whether synchronized scrolling is enabled
     sync_enabled: bool,
     /// Whether GPU rendering is available
+    #[allow(dead_code)]
     use_gpu: bool,
     /// Whether reference lines are enabled (on by default)
     reference_lines_enabled: bool,
@@ -249,6 +256,7 @@ impl ViewportManager {
     }
 
     /// Set active viewport
+    #[allow(dead_code)]
     pub fn set_active(&mut self, id: ViewportId) {
         if id < self.layout.viewport_count() {
             self.active_viewport = id;
@@ -817,18 +825,11 @@ impl ViewportManager {
                     // Check z_sign to determine mapping direction
                     let (_, _, z_sign) = volume.get_axis_direction(PatientAxis::Z);
 
-                    // Calculate base y_normalized from z_sign
-                    let base_y = if z_sign > 0.0 {
+                    // Calculate y_normalized from z_sign
+                    let y_normalized = if z_sign > 0.0 {
                         1.0 - (active_index as f64 / max_index)
                     } else {
                         active_index as f64 / max_index
-                    };
-
-                    // For coregistered volumes, invert the result (geometry mismatch)
-                    let y_normalized = if volume.is_coregistered {
-                        1.0 - base_y
-                    } else {
-                        base_y
                     };
                     let y = y_normalized * other_h;
 
@@ -1066,17 +1067,31 @@ impl ViewportManager {
     }
 
     /// Set image on a viewport (resets zoom - use for new series)
-    pub fn set_image(&mut self, id: ViewportId, image: DicomImage) {
+    pub fn set_image(&mut self, id: ViewportId, image: std::sync::Arc<DicomImage>) {
         if let Some(slot) = self.get_slot_mut(id) {
             slot.viewport.set_image(image);
         }
     }
 
     /// Set image on a viewport while preserving zoom/pan (use when scrolling)
-    pub fn set_image_keep_view(&mut self, id: ViewportId, image: DicomImage) {
+    pub fn set_image_keep_view(&mut self, id: ViewportId, image: std::sync::Arc<DicomImage>) {
         if let Some(slot) = self.get_slot_mut(id) {
             slot.viewport.set_image_keep_view(image);
         }
+    }
+
+    /// Toggle PHI visibility on all viewports
+    pub fn toggle_phi_hidden(&mut self) {
+        // Use first viewport's state as the reference for toggling
+        let new_state = !self.slots[0].viewport.phi_hidden;
+        for slot in &mut self.slots {
+            slot.viewport.phi_hidden = new_state;
+        }
+    }
+
+    /// Whether PHI is currently hidden
+    pub fn phi_hidden(&self) -> bool {
+        self.slots[0].viewport.phi_hidden
     }
 
     /// Get status text for the status bar
@@ -1135,17 +1150,20 @@ impl ViewportManager {
     }
 
     /// Set sync enabled/disabled directly
+    #[allow(dead_code)]
     pub fn set_sync_enabled(&mut self, enabled: bool) {
         self.sync_enabled = enabled;
     }
 
     /// Iterate over viewport slots (immutable)
+    #[allow(dead_code)]
     pub fn slots(&self) -> impl Iterator<Item = &ViewportSlot> {
         let count = self.layout.viewport_count();
         self.slots[..count].iter()
     }
 
     /// Iterate over viewport slots (mutable)
+    #[allow(dead_code)]
     pub fn slots_mut(&mut self) -> impl Iterator<Item = &mut ViewportSlot> {
         let count = self.layout.viewport_count();
         self.slots[..count].iter_mut()

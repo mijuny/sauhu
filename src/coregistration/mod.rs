@@ -20,7 +20,6 @@
 //! 3. User clicks on source series (to be transformed)
 //! 4. Registration runs in background with progress indicator
 //! 5. Source viewport is updated with coregistered series
-#![allow(dead_code)]
 #![allow(unused_imports)]
 
 mod manager;

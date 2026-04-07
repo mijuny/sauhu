@@ -191,30 +191,46 @@ This caused sync failure because slice locations are computed from volume geomet
 
 ### The Solution
 
-Copy target volume's geometry to the transformed volume:
+Resample onto the target's exact grid: target dimensions, spacing, origin, and
+directions. The output volume is geometrically identical to the target, just with
+different voxel intensities.
 
 ```rust
 pub fn apply_transform_to_volume(
     volume: &Volume,
     transform: &RigidTransform,
-    target_volume: Option<&Volume>,  // NEW: target for geometry
+    target_volume: Option<&Volume>,
 ) -> Volume {
-    // ... resample voxel data ...
+    // Use target grid when available
+    let (out_w, out_h, out_d, out_col_sp, out_row_sp, out_slice_sp) =
+        if let Some(target) = target_volume {
+            (target.dimensions, target.spacing)  // target grid
+        } else {
+            (volume.dimensions, volume.spacing)  // source grid
+        };
 
-    // CRITICAL: Copy target geometry for sync
-    if let Some(target) = target_volume {
-        new_volume.origin = target.origin.clone();
-        new_volume.row_direction = target.row_direction.clone();
-        new_volume.col_direction = target.col_direction.clone();
-        new_volume.slice_direction = target.slice_direction.clone();
-        new_volume.acquisition_orientation = target.acquisition_orientation;
-        new_volume.frame_of_reference_uid = target.frame_of_reference_uid.clone();
-        new_volume.study_instance_uid = target.study_instance_uid.clone();
+    for z in 0..out_d {
+        for y in 0..out_h {
+            for x in 0..out_w {
+                // Output position in target physical space
+                let phys = (x * out_col_sp, y * out_row_sp, z * out_slice_sp);
+                // Map back to source physical space
+                let src_phys = inv.transform_point(phys);
+                // Sample from source using source spacing
+                let src_idx = (src_phys.x / src_col_sp, ...);
+                output[x + y*out_w + z*out_w*out_h] = trilinear_sample(source, src_idx);
+            }
+        }
     }
+
+    // Output volume adopts ALL target geometry: dimensions, spacing,
+    // origin, directions, acquisition_orientation, frame_of_reference, etc.
 }
 ```
 
-This is analogous to the gantry tilt issue in MPR sync - geometry must be consistent for slice location computation to work.
+This eliminates the `is_coregistered` hack that was previously needed for
+reference lines. Since the output volume has the same geometry as the target,
+`ImagePlane::intersect()` produces correct results without special cases.
 
 ## Reference Line Integration
 
@@ -252,9 +268,17 @@ let inferior_dir = if z_sign > 0.0 { z_dir.negate() } else { z_dir };
 
 ### 4. Reference Lines Inverted
 
-**Symptom**: Scrolling down moved reference line up
-**Cause**: z_dir.negate() wrong when z_dir already points inferior
-**Fix**: Check z_sign and use correct direction
+**Symptom**: Scrolling down moved reference line up on coronal/sagittal MPR
+**Cause**: Two separate issues:
+  (a) `apply_transform_to_volume` kept source dimensions/spacing while copying
+  target directions, creating a geometry mismatch for `ImagePlane::intersect()`.
+  (b) `resample()` hardcoded `(0..d).rev()` assuming z-index always increases
+  from inferior to superior. `compute_image_plane()` derived directions from the
+  raw volume geometry. When `slice_direction.z < 0`, the two disagreed.
+**Fix**:
+  (a) Resample onto target's exact grid (target dimensions + spacing).
+  (b) Both `resample()` and `compute_image_plane()` now check `z_sign` and
+  handle each case. See `docs/mpr-implementation.md` for details.
 
 ## Testing Checklist
 
@@ -293,4 +317,7 @@ When modifying coregistration:
 - **Phase 3**: Improved pyramid schedule (3 levels, more iterations)
 - **Phase 4**: Added PCA rotation (later disabled due to sign issues)
 - **Geometry fix**: Copy target geometry for correct sync
-- **Reference line fix**: Correct col_direction sign for head-up display
+- **April 2026 - Grid resampling**: Resample onto target's exact grid (dimensions +
+  spacing) instead of just copying directions. Eliminated `is_coregistered` hack.
+- **April 2026 - z_sign fix**: `resample()` and `compute_image_plane()` now both
+  check z_sign for correct pixel layout regardless of slice ordering direction.

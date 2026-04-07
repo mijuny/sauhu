@@ -1,5 +1,7 @@
-//! Database schema for Sauhu
+// DB schema provides full CRUD API; not all functions are used yet
 #![allow(dead_code)]
+
+//! Database schema for Sauhu
 
 use anyhow::Result;
 use rusqlite::Connection;

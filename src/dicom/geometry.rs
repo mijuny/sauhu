@@ -2,7 +2,6 @@
 //!
 //! Provides 3D geometry for calculating reference line intersections between
 //! orthogonal image planes.
-#![allow(dead_code)]
 
 use super::DicomFile;
 
@@ -19,6 +18,7 @@ impl Vec3 {
         Self { x, y, z }
     }
 
+    #[allow(dead_code)]
     pub fn from_array(arr: [f64; 3]) -> Self {
         Self::new(arr[0], arr[1], arr[2])
     }
@@ -135,6 +135,7 @@ impl ImagePlane {
     }
 
     /// Get the physical size of the image in mm
+    #[allow(dead_code)]
     pub fn physical_size(&self) -> (f64, f64) {
         let width = self.dimensions.1 as f64 * self.pixel_spacing.1;
         let height = self.dimensions.0 as f64 * self.pixel_spacing.0;
@@ -143,6 +144,7 @@ impl ImagePlane {
 
     /// Convert a 3D patient coordinate to 2D pixel coordinates on this plane
     /// Returns None if the point is not on the plane
+    #[allow(dead_code)]
     pub fn patient_to_pixel(&self, point: &Vec3) -> Point2D {
         // Vector from plane origin to point
         let v = point.sub(&self.position);
@@ -167,6 +169,7 @@ impl ImagePlane {
     }
 
     /// Get the four corners of the image plane in patient coordinates
+    #[allow(dead_code)]
     pub fn corners(&self) -> [Vec3; 4] {
         let (rows, cols) = self.dimensions;
         [

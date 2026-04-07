@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 
 use crate::db::{get_study, Database};
 use crate::dicom::{DicomFile, SyncInfo};
@@ -10,6 +9,14 @@ use std::thread;
 
 use super::image_loading::ScanContext;
 use super::{LoadedStudyWithSeries, SauhuApp};
+
+/// Background loading system state
+pub(super) struct BackgroundSystem {
+    pub(super) request_tx: Sender<BackgroundRequest>,
+    pub(super) result_rx: Receiver<BackgroundResult>,
+    pub(super) loading_state: BackgroundLoadingState,
+    pub(super) image_cache: crate::cache::ImageCache,
+}
 
 /// Request for background operations (to avoid blocking UI)
 pub(super) enum BackgroundRequest {
@@ -74,6 +81,7 @@ pub(super) enum BackgroundLoadingState {
     Idle,
     LoadingPatients,
     ScanningDirectory {
+        #[allow(dead_code)]
         path: String,
     },
     LoadingSeries,
@@ -249,9 +257,9 @@ impl SauhuApp {
     pub(super) fn check_background_results(&mut self) {
         // Check if database window needs patient loading
         if self.database_window.take_load_request() {
-            self.bg_loading_state = BackgroundLoadingState::LoadingPatients;
+            self.background.loading_state = BackgroundLoadingState::LoadingPatients;
             let _ = self
-                .bg_request_tx
+                .background.request_tx
                 .send(BackgroundRequest::LoadLocalPatients);
         }
 
@@ -266,9 +274,9 @@ impl SauhuApp {
             for s in &pending.studies {
                 tracing::info!("  Study {} path: {}", s.id, s.file_path);
             }
-            self.bg_loading_state = BackgroundLoadingState::LoadingSeries;
+            self.background.loading_state = BackgroundLoadingState::LoadingSeries;
             let _ = self
-                .bg_request_tx
+                .background.request_tx
                 .send(BackgroundRequest::LoadPatientSeries {
                     patient_id: pending.patient_id,
                     patient_name: pending.patient_name,
@@ -277,11 +285,11 @@ impl SauhuApp {
         }
 
         // Poll for results
-        while let Ok(result) = self.bg_result_rx.try_recv() {
+        while let Ok(result) = self.background.result_rx.try_recv() {
             match result {
                 BackgroundResult::LocalStudiesLoaded { studies } => {
                     self.database_window.handle_studies_loaded(studies);
-                    self.bg_loading_state = BackgroundLoadingState::Idle;
+                    self.background.loading_state = BackgroundLoadingState::Idle;
                 }
                 BackgroundResult::DirectoryScanComplete {
                     path,
@@ -289,7 +297,7 @@ impl SauhuApp {
                     context,
                 } => {
                     self.handle_directory_scanned(path, paths, context);
-                    self.bg_loading_state = BackgroundLoadingState::Idle;
+                    self.background.loading_state = BackgroundLoadingState::Idle;
                 }
                 BackgroundResult::PatientSeriesLoaded {
                     patient_id,
@@ -348,7 +356,7 @@ impl SauhuApp {
 
                     self.patient_sidebar
                         .handle_series_loaded(studies_with_series);
-                    self.bg_loading_state = BackgroundLoadingState::Idle;
+                    self.background.loading_state = BackgroundLoadingState::Idle;
                     tracing::info!(
                         "Loaded series for patient {} ({})",
                         patient_name,
@@ -357,7 +365,7 @@ impl SauhuApp {
                 }
                 BackgroundResult::FilesValidated { paths, viewport_id } => {
                     self.handle_files_validated(paths, viewport_id);
-                    self.bg_loading_state = BackgroundLoadingState::Idle;
+                    self.background.loading_state = BackgroundLoadingState::Idle;
                 }
                 BackgroundResult::SeriesDirectoryScanned {
                     series_info,
@@ -378,12 +386,12 @@ impl SauhuApp {
                             sync_info,
                         );
                     }
-                    self.bg_loading_state = BackgroundLoadingState::Idle;
+                    self.background.loading_state = BackgroundLoadingState::Idle;
                 }
                 BackgroundResult::Error { message } => {
                     tracing::error!("Background task error: {}", message);
                     self.status = format!("Error: {}", message);
-                    self.bg_loading_state = BackgroundLoadingState::Idle;
+                    self.background.loading_state = BackgroundLoadingState::Idle;
                 }
             }
         }
@@ -471,7 +479,7 @@ impl SauhuApp {
 
         // Prefetch entire series to cache for smooth scrolling
         let t0 = std::time::Instant::now();
-        self.image_cache.prefetch_series(&paths);
+        self.background.image_cache.prefetch_series(&paths);
         tracing::info!(
             "prefetch_series({} files) took {:?}",
             path_count,
@@ -505,7 +513,7 @@ impl SauhuApp {
         }
 
         let path_count = paths.len();
-        self.image_cache.prefetch_series(&paths);
+        self.background.image_cache.prefetch_series(&paths);
 
         let start_at_middle = self.settings.viewer.start_at_middle_slice;
         self.viewport_manager

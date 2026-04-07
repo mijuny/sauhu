@@ -1,9 +1,9 @@
 //! Main application state for Sauhu
-#![allow(dead_code)]
 
 mod background;
 mod coregistration;
 mod image_loading;
+mod interaction;
 mod mpr;
 mod quick_fetch;
 
@@ -17,7 +17,7 @@ use crate::hanging_protocol::{self, ProtocolState};
 use crate::ipc::IpcCommand;
 use crate::ui::{
     AnnotationStore, DatabaseWindow, InteractionMode, MeasurementState, OpenStudyAction, PatientSidebar,
-    SeriesAddedEvent, SidebarAction, ViewportId, ViewportLayout, ViewportManager,
+    SeriesAddedEvent, SidebarAction, ViewportLayout, ViewportManager,
     ViewportShowResult,
 };
 use egui::DroppedFile;
@@ -26,10 +26,11 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::thread;
 
-use background::{BackgroundLoadingState, BackgroundRequest, BackgroundResult};
-use image_loading::LoadResult;
-use mpr::{MprGeneratingState, MprRequest, MprResult};
-use quick_fetch::{QuickFetchResult, QuickFetchState};
+use background::{BackgroundLoadingState, BackgroundSystem};
+use image_loading::{ImageLoadRequest, ImageLoadingSystem, LoadResult};
+use interaction::InteractionState;
+use mpr::{MprRequest, MprSystem};
+use quick_fetch::{QuickFetchState, QuickFetchSystem};
 
 /// Loaded study with series info (result of background loading)
 #[derive(Debug, Clone)]
@@ -43,6 +44,7 @@ pub struct LoadedStudyWithSeries {
 #[derive(Debug, Clone)]
 pub struct CurrentPatient {
     pub patient_id: String,
+    #[allow(dead_code)]
     pub patient_name: String,
     pub studies: Vec<crate::db::Study>,
 }
@@ -57,16 +59,8 @@ pub struct SauhuApp {
     viewport_manager: ViewportManager,
     /// Status message
     status: String,
-    /// Pending file dialog result
-    pending_files: Option<Vec<PathBuf>>,
-    /// Channel for receiving loaded images
-    load_receiver: Receiver<LoadResult>,
-    /// Channel for sending load requests (path, index, total, viewport_id, generation)
-    load_sender: Sender<(PathBuf, usize, usize, ViewportId, u64)>,
-    /// Generation counter for patient switches (to discard stale async results)
-    patient_generation: u64,
-    /// Whether we're waiting for an image to load
-    loading: bool,
+    /// Image loading system (file loading, async channels, generation tracking)
+    image_loading: ImageLoadingSystem,
     /// Whether GPU rendering is available
     gpu_available: bool,
     /// Database window (patient browser + PACS query)
@@ -75,47 +69,20 @@ pub struct SauhuApp {
     current_patient: Option<CurrentPatient>,
     /// Patient sidebar (shows current patient's series)
     patient_sidebar: PatientSidebar,
-    /// Quick fetch state (Ctrl+G)
-    quick_fetch_state: QuickFetchState,
-    /// Channel for quick fetch results
-    quick_fetch_rx: Option<Receiver<QuickFetchResult>>,
-    /// Current mouse interaction mode (W = windowing, S = scroll, L = measure, O = ROI)
-    interaction_mode: InteractionMode,
-    /// Accumulated scroll from right-click drag (for smooth scrolling)
-    scroll_drag_accumulator: f32,
-    /// Last mouse Y position for scroll drag
-    scroll_drag_last_y: Option<f32>,
-    /// Annotation storage (measurements persist per image)
-    annotation_store: AnnotationStore,
-    /// Current measurement state (what user is drawing)
-    measurement_state: MeasurementState,
-    /// Current mouse position (for measurement preview)
-    current_mouse_pos: Option<egui::Pos2>,
-    /// Active viewport rect (for coordinate conversion)
-    active_viewport_rect: Option<egui::Rect>,
+    /// Quick fetch system (Ctrl+G PACS retrieve)
+    quick_fetch: QuickFetchSystem,
+    /// User interaction state (mode, measurements, annotations, mouse tracking)
+    interaction: InteractionState,
     /// IPC command receiver (for external apps like Sanelu)
     ipc_rx: Option<Receiver<IpcCommand>>,
-    /// Channel for sending background requests
-    bg_request_tx: Sender<BackgroundRequest>,
-    /// Channel for receiving background results
-    bg_result_rx: Receiver<BackgroundResult>,
-    /// Background loading state (for UI feedback)
-    bg_loading_state: BackgroundLoadingState,
-    /// Image cache for decoded DICOM images (avoids re-decoding on scroll)
-    image_cache: ImageCache,
+    /// Background loading system (DB queries, directory scans, image cache)
+    background: BackgroundSystem,
     /// Pending cache hits to process (need frame access for GPU texture upload)
-    pending_cache_hits: Vec<(PathBuf, usize, usize, ViewportId, u64)>,
+    pending_cache_hits: Vec<ImageLoadRequest>,
     /// Flag to request GPU texture cache clear (processed safely during render)
     gpu_cache_needs_clear: bool,
-    /// Pending MPR request (waiting for images to be cached)
-    /// Tuple of (viewport_id, plane, total_images_needed)
-    pending_mpr: Option<(ViewportId, crate::dicom::AnatomicalPlane, usize)>,
-    /// Channel for sending MPR requests to background worker
-    mpr_request_tx: Sender<MprRequest>,
-    /// Channel for receiving MPR results
-    mpr_result_rx: Receiver<MprResult>,
-    /// Current MPR generation state (for UI feedback and async handling)
-    mpr_generating: Option<MprGeneratingState>,
+    /// MPR (Multi-Planar Reconstruction) system
+    mpr: MprSystem,
     /// Channel for receiving series added events from retrieval
     series_added_rx: Receiver<SeriesAddedEvent>,
     /// Coregistration manager (handles Ctrl+R workflow)
@@ -128,17 +95,14 @@ pub struct SauhuApp {
 
 impl SauhuApp {
     /// Create channels for async image loading
-    #[allow(clippy::type_complexity)]
-    fn create_loader_channels() -> (
-        Sender<(PathBuf, usize, usize, ViewportId, u64)>,
-        Receiver<LoadResult>,
-    ) {
-        let (request_tx, request_rx) = mpsc::channel::<(PathBuf, usize, usize, ViewportId, u64)>();
+    fn create_loader_channels() -> (Sender<ImageLoadRequest>, Receiver<LoadResult>) {
+        let (request_tx, request_rx) = mpsc::channel::<ImageLoadRequest>();
         let (result_tx, result_rx) = mpsc::channel::<LoadResult>();
 
         // Spawn loader thread
         thread::spawn(move || {
-            while let Ok((path, index, total, viewport_id, generation)) = request_rx.recv() {
+            while let Ok(req) = request_rx.recv() {
+                let ImageLoadRequest { path, index, total, viewport_id, generation } = req;
                 let result = DicomFile::open(&path)
                     .and_then(|dcm| {
                         DicomImage::from_file(&dcm)
@@ -219,35 +183,45 @@ impl SauhuApp {
             db,
             viewport_manager: ViewportManager::new(gpu_available),
             status: "Ready - Press D to open Database".to_string(),
-            pending_files: None,
-            load_receiver,
-            load_sender,
-            patient_generation: 0,
-            loading: false,
+            image_loading: ImageLoadingSystem {
+                pending_files: None,
+                load_receiver,
+                load_sender,
+                patient_generation: 0,
+                loading: false,
+            },
             gpu_available,
             database_window: DatabaseWindow::new(settings, series_added_tx),
             current_patient: None,
             patient_sidebar: PatientSidebar::new(),
-            quick_fetch_state: QuickFetchState::default(),
-            quick_fetch_rx: None,
-            interaction_mode: InteractionMode::default(),
-            scroll_drag_accumulator: 0.0,
-            scroll_drag_last_y: None,
-            annotation_store: AnnotationStore::new(),
-            measurement_state: MeasurementState::default(),
-            current_mouse_pos: None,
-            active_viewport_rect: None,
+            quick_fetch: QuickFetchSystem {
+                state: QuickFetchState::default(),
+                rx: None,
+            },
+            interaction: InteractionState {
+                mode: InteractionMode::default(),
+                scroll_drag_accumulator: 0.0,
+                scroll_drag_last_y: None,
+                annotation_store: AnnotationStore::new(),
+                measurement_state: MeasurementState::default(),
+                current_mouse_pos: None,
+                active_viewport_rect: None,
+            },
             ipc_rx: None,
-            bg_request_tx,
-            bg_result_rx,
-            bg_loading_state: BackgroundLoadingState::default(),
-            image_cache,
+            background: BackgroundSystem {
+                request_tx: bg_request_tx,
+                result_rx: bg_result_rx,
+                loading_state: BackgroundLoadingState::default(),
+                image_cache,
+            },
             pending_cache_hits: Vec::new(),
             gpu_cache_needs_clear: false,
-            pending_mpr: None,
-            mpr_request_tx,
-            mpr_result_rx,
-            mpr_generating: None,
+            mpr: MprSystem {
+                pending: None,
+                request_tx: mpr_request_tx,
+                result_rx: mpr_result_rx,
+                generating: None,
+            },
             series_added_rx,
             coregistration: CoregistrationManager::new(),
             protocol_state: ProtocolState::default(),
@@ -284,35 +258,45 @@ impl SauhuApp {
             db,
             viewport_manager: ViewportManager::new(gpu_available),
             status: "Ready - Press D to open Database".to_string(),
-            pending_files: pending,
-            load_receiver,
-            load_sender,
-            patient_generation: 0,
-            loading: false,
+            image_loading: ImageLoadingSystem {
+                pending_files: pending,
+                load_receiver,
+                load_sender,
+                patient_generation: 0,
+                loading: false,
+            },
             gpu_available,
             database_window: DatabaseWindow::new(settings, series_added_tx),
             current_patient: None,
             patient_sidebar: PatientSidebar::new(),
-            quick_fetch_state: QuickFetchState::default(),
-            quick_fetch_rx: None,
-            interaction_mode: InteractionMode::default(),
-            scroll_drag_accumulator: 0.0,
-            scroll_drag_last_y: None,
-            annotation_store: AnnotationStore::new(),
-            measurement_state: MeasurementState::default(),
-            current_mouse_pos: None,
-            active_viewport_rect: None,
+            quick_fetch: QuickFetchSystem {
+                state: QuickFetchState::default(),
+                rx: None,
+            },
+            interaction: InteractionState {
+                mode: InteractionMode::default(),
+                scroll_drag_accumulator: 0.0,
+                scroll_drag_last_y: None,
+                annotation_store: AnnotationStore::new(),
+                measurement_state: MeasurementState::default(),
+                current_mouse_pos: None,
+                active_viewport_rect: None,
+            },
             ipc_rx: Some(ipc_rx),
-            bg_request_tx,
-            bg_result_rx,
-            bg_loading_state: BackgroundLoadingState::default(),
-            image_cache,
+            background: BackgroundSystem {
+                request_tx: bg_request_tx,
+                result_rx: bg_result_rx,
+                loading_state: BackgroundLoadingState::default(),
+                image_cache,
+            },
             pending_cache_hits: Vec::new(),
             gpu_cache_needs_clear: false,
-            pending_mpr: None,
-            mpr_request_tx,
-            mpr_result_rx,
-            mpr_generating: None,
+            mpr: MprSystem {
+                pending: None,
+                request_tx: mpr_request_tx,
+                result_rx: mpr_result_rx,
+                generating: None,
+            },
             series_added_rx,
             coregistration: CoregistrationManager::new(),
             protocol_state: ProtocolState::default(),
@@ -329,7 +313,7 @@ impl SauhuApp {
             .pick_files();
 
         if let Some(paths) = files {
-            self.pending_files = Some(paths);
+            self.image_loading.pending_files = Some(paths);
         }
     }
 
@@ -397,7 +381,7 @@ impl SauhuApp {
             if let Some(series) = series_opt {
                 // Use pre-generated series - CPU rendering for simplicity
                 if let Some(image) = series.images.get(new_index) {
-                    slot.viewport.set_image_keep_view(image.clone());
+                    slot.viewport.set_image_keep_view(Arc::clone(image));
                     slot.viewport.set_window(wc, ww);
                 }
             } else {
@@ -405,7 +389,7 @@ impl SauhuApp {
                 let volume = slot.mpr_state.volume.clone();
                 if let (Some(slice), Some(vol)) = (slot.mpr_state.get_slice(), volume.as_ref()) {
                     let mpr_image = slice.to_dicom_image(vol, new_index);
-                    slot.viewport.set_image(mpr_image);
+                    slot.viewport.set_image(Arc::new(mpr_image));
                     slot.viewport.set_window(wc, ww);
                 }
             }
@@ -452,7 +436,7 @@ impl SauhuApp {
         // Trigger prefetch for all updated viewports
         for (viewport_id, new_index) in updates {
             if let Some(slot) = self.viewport_manager.get_slot(viewport_id) {
-                self.image_cache.prefetch(&slot.series_files, new_index);
+                self.background.image_cache.prefetch(&slot.series_files, new_index);
             }
         }
     }
@@ -621,41 +605,41 @@ impl SauhuApp {
                     ui.spacing_mut().item_spacing.x = 2.0;
 
                     // === Tool modes ===
-                    let mode = self.interaction_mode;
+                    let mode = self.interaction.mode;
                     if ui
                         .selectable_label(mode == InteractionMode::Windowing, "☀ W/L")
                         .on_hover_text("Window/Level (W)")
                         .clicked()
                     {
-                        self.interaction_mode = InteractionMode::Windowing;
+                        self.interaction.mode = InteractionMode::Windowing;
                     }
                     if ui
                         .selectable_label(mode == InteractionMode::Pan, "✋ Pan")
                         .on_hover_text("Pan (Shift+drag)")
                         .clicked()
                     {
-                        self.interaction_mode = InteractionMode::Pan;
+                        self.interaction.mode = InteractionMode::Pan;
                     }
                     if ui
                         .selectable_label(mode == InteractionMode::Measure, "📏 Length")
                         .on_hover_text("Length measurement (L)")
                         .clicked()
                     {
-                        self.interaction_mode = InteractionMode::Measure;
+                        self.interaction.mode = InteractionMode::Measure;
                     }
                     if ui
                         .selectable_label(mode == InteractionMode::CircleROI, "⊙ ROI")
                         .on_hover_text("Circle ROI (O)")
                         .clicked()
                     {
-                        self.interaction_mode = InteractionMode::CircleROI;
+                        self.interaction.mode = InteractionMode::CircleROI;
                     }
                     if ui
                         .selectable_label(mode == InteractionMode::ROIWindowing, "⊙☀ ROI W/L")
                         .on_hover_text("ROI Windowing (Shift+W)")
                         .clicked()
                     {
-                        self.interaction_mode = InteractionMode::ROIWindowing;
+                        self.interaction.mode = InteractionMode::ROIWindowing;
                     }
 
                     ui.separator();
@@ -806,8 +790,8 @@ impl SauhuApp {
                 ui.separator();
 
                 // Show current interaction mode and mouse button functions
-                let mode_name = self.interaction_mode.display_name();
-                let (left_fn, right_fn) = self.interaction_mode.mouse_hints();
+                let mode_name = self.interaction.mode.display_name();
+                let (left_fn, right_fn) = self.interaction.mode.mouse_hints();
                 ui.label(format!("[{}] L: {} | R: {}", mode_name, left_fn, right_fn));
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -837,7 +821,7 @@ impl SauhuApp {
         // Main viewport area - show all viewports according to current layout
         let mut viewport_result: Option<ViewportShowResult> = None;
         egui::CentralPanel::default().show(ctx, |ui| {
-            viewport_result = Some(self.viewport_manager.show(ui, self.interaction_mode));
+            viewport_result = Some(self.viewport_manager.show(ui, self.interaction.mode));
         });
 
         // Draw annotations on the active viewport
@@ -915,27 +899,27 @@ impl SauhuApp {
         tracing::info!("Clearing patient state");
 
         // Increment generation to invalidate all pending async operations
-        self.patient_generation += 1;
+        self.image_loading.patient_generation += 1;
         tracing::debug!(
             "Patient generation incremented to {}",
-            self.patient_generation
+            self.image_loading.patient_generation
         );
 
         // Clear pending cache hits (now stale)
         self.pending_cache_hits.clear();
 
         // Clear pending MPR request
-        self.pending_mpr = None;
+        self.mpr.pending = None;
 
         // Cancel any ongoing MPR generation
-        let _ = self.mpr_request_tx.send(MprRequest::Cancel);
-        self.mpr_generating = None;
+        let _ = self.mpr.request_tx.send(MprRequest::Cancel);
+        self.mpr.generating = None;
 
         // Drain stale load results (best effort - loader thread may still be working)
-        while self.load_receiver.try_recv().is_ok() {}
+        while self.image_loading.load_receiver.try_recv().is_ok() {}
 
         // Drain stale MPR results
-        while self.mpr_result_rx.try_recv().is_ok() {}
+        while self.mpr.result_rx.try_recv().is_ok() {}
 
         // Clear viewports (GPU textures will be replaced when new images load)
         self.viewport_manager.clear_all();
@@ -947,16 +931,16 @@ impl SauhuApp {
         self.patient_sidebar.clear();
 
         // Clear annotations
-        self.annotation_store.clear_all();
+        self.interaction.annotation_store.clear_all();
 
         // Reset measurement state
-        self.measurement_state = MeasurementState::default();
+        self.interaction.measurement_state = MeasurementState::default();
 
         // Reset interaction mode
-        self.interaction_mode = InteractionMode::default();
+        self.interaction.mode = InteractionMode::default();
 
         // Clear image cache (don't keep old patient's images in memory)
-        self.image_cache.clear();
+        self.background.image_cache.clear();
 
         // Reset hanging protocol state
         self.protocol_state.reset();
@@ -983,7 +967,7 @@ impl SauhuApp {
 
         // Draw stored annotations for current image
         if let Some(key) = slot.annotation_key() {
-            if let Some(annotations) = self.annotation_store.get(&key) {
+            if let Some(annotations) = self.interaction.annotation_store.get(&key) {
                 for annotation in annotations {
                     match annotation {
                         Annotation::Length(m) => {
@@ -1013,8 +997,8 @@ impl SauhuApp {
         }
 
         // Draw measurement preview (rubber-band while drawing)
-        if let Some(mouse_pos) = self.current_mouse_pos {
-            match &self.measurement_state {
+        if let Some(mouse_pos) = self.interaction.current_mouse_pos {
+            match &self.interaction.measurement_state {
                 crate::ui::MeasurementState::DrawingLength { start } => {
                     viewport.draw_measurement_preview(
                         &painter,
@@ -1052,17 +1036,17 @@ impl SauhuApp {
         }
 
         // Track mouse position for preview
-        self.current_mouse_pos = ctx.input(|i| i.pointer.hover_pos());
+        self.interaction.current_mouse_pos = ctx.input(|i| i.pointer.hover_pos());
 
         // Get active viewport info
         let _active_id = self.viewport_manager.active_viewport();
         let slot = self.viewport_manager.get_active();
         let viewport_rect = slot.viewport.last_rect();
-        self.active_viewport_rect = Some(viewport_rect);
+        self.interaction.active_viewport_rect = Some(viewport_rect);
 
         // Check if mouse is over active viewport
         let mouse_over_viewport = self
-            .current_mouse_pos
+            .interaction.current_mouse_pos
             .map(|pos| viewport_rect.contains(pos))
             .unwrap_or(false);
 
@@ -1075,19 +1059,19 @@ impl SauhuApp {
         let _left_pressed = ctx.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary));
         let _left_released = ctx.input(|i| i.pointer.button_released(egui::PointerButton::Primary));
 
-        match self.interaction_mode {
+        match self.interaction.mode {
             InteractionMode::Measure => {
                 // Length measurement uses clicks (two discrete points)
                 if left_clicked {
-                    if let Some(screen_pos) = self.current_mouse_pos {
+                    if let Some(screen_pos) = self.interaction.current_mouse_pos {
                         let slot = self.viewport_manager.get_active();
                         if let Some(img_pos) =
                             slot.viewport.screen_to_image(screen_pos, viewport_rect)
                         {
-                            match &self.measurement_state {
+                            match &self.interaction.measurement_state {
                                 MeasurementState::Idle => {
                                     // First click - start measurement
-                                    self.measurement_state = MeasurementState::DrawingLength {
+                                    self.interaction.measurement_state = MeasurementState::DrawingLength {
                                         start: AnnotationPoint::new(img_pos.0, img_pos.1),
                                     };
                                 }
@@ -1099,7 +1083,7 @@ impl SauhuApp {
                                         .calculate_distance((start.x, start.y), (end.x, end.y));
 
                                     let measurement = LengthMeasurement {
-                                        id: self.annotation_store.next_id(),
+                                        id: self.interaction.annotation_store.next_id(),
                                         start: *start,
                                         end,
                                         distance: DistanceResult {
@@ -1110,11 +1094,11 @@ impl SauhuApp {
 
                                     // Store annotation
                                     if let Some(key) = slot.annotation_key() {
-                                        self.annotation_store
+                                        self.interaction.annotation_store
                                             .add(&key, Annotation::Length(measurement));
                                     }
 
-                                    self.measurement_state = MeasurementState::Idle;
+                                    self.interaction.measurement_state = MeasurementState::Idle;
                                 }
                                 _ => {}
                             }
@@ -1126,20 +1110,20 @@ impl SauhuApp {
                 // Circle ROI uses click-click (like length measurement)
                 // First click sets center, second click sets radius
                 if left_clicked {
-                    if let Some(screen_pos) = self.current_mouse_pos {
+                    if let Some(screen_pos) = self.interaction.current_mouse_pos {
                         let slot = self.viewport_manager.get_active();
                         if let Some(img_pos) =
                             slot.viewport.screen_to_image(screen_pos, viewport_rect)
                         {
-                            match &self.measurement_state {
+                            match &self.interaction.measurement_state {
                                 MeasurementState::Idle => {
                                     // First click - set center
-                                    if self.interaction_mode == InteractionMode::CircleROI {
-                                        self.measurement_state = MeasurementState::DrawingCircle {
+                                    if self.interaction.mode == InteractionMode::CircleROI {
+                                        self.interaction.measurement_state = MeasurementState::DrawingCircle {
                                             center: AnnotationPoint::new(img_pos.0, img_pos.1),
                                         };
                                     } else {
-                                        self.measurement_state =
+                                        self.interaction.measurement_state =
                                             MeasurementState::DrawingROIWindow {
                                                 center: AnnotationPoint::new(img_pos.0, img_pos.1),
                                             };
@@ -1168,19 +1152,19 @@ impl SauhuApp {
                                             });
 
                                         if matches!(
-                                            self.measurement_state,
+                                            self.interaction.measurement_state,
                                             MeasurementState::DrawingCircle { .. }
                                         ) {
                                             // Store ROI annotation
                                             let roi = CircleROI {
-                                                id: self.annotation_store.next_id(),
+                                                id: self.interaction.annotation_store.next_id(),
                                                 center: *center,
                                                 radius_px,
                                                 stats,
                                             };
 
                                             if let Some(key) = slot.annotation_key() {
-                                                self.annotation_store
+                                                self.interaction.annotation_store
                                                     .add(&key, Annotation::Circle(roi));
                                             }
                                         } else {
@@ -1198,7 +1182,7 @@ impl SauhuApp {
                                         }
                                     }
 
-                                    self.measurement_state = MeasurementState::Idle;
+                                    self.interaction.measurement_state = MeasurementState::Idle;
                                 }
                                 _ => {}
                             }
@@ -1432,7 +1416,7 @@ impl eframe::App for SauhuApp {
 
         // Process prefetch results from background threads
         let t0 = std::time::Instant::now();
-        self.image_cache.process_prefetch_results();
+        self.background.image_cache.process_prefetch_results();
         if t0.elapsed().as_millis() > threshold_ms as u128 {
             tracing::warn!("SLOW: process_prefetch_results {:?}", t0.elapsed());
         }
@@ -1492,11 +1476,11 @@ impl eframe::App for SauhuApp {
         }
 
         // Keep repainting while loading or fetching or generating MPR or coregistering or retrieving
-        if self.loading
-            || self.quick_fetch_rx.is_some()
-            || !matches!(self.bg_loading_state, BackgroundLoadingState::Idle)
+        if self.image_loading.loading
+            || self.quick_fetch.rx.is_some()
+            || !matches!(self.background.loading_state, BackgroundLoadingState::Idle)
             || !self.pending_cache_hits.is_empty()
-            || self.mpr_generating.is_some()
+            || self.mpr.generating.is_some()
             || self.coregistration.mode().is_running()
             || self.database_window.is_retrieving()
         {
@@ -1504,7 +1488,7 @@ impl eframe::App for SauhuApp {
         }
 
         // Handle pending file dialog results
-        if let Some(paths) = self.pending_files.take() {
+        if let Some(paths) = self.image_loading.pending_files.take() {
             self.load_files(paths);
         }
 
@@ -1549,6 +1533,16 @@ impl eframe::App for SauhuApp {
             // F1 to toggle toolbar
             if i.key_pressed(egui::Key::F1) {
                 self.toolbar_visible = !self.toolbar_visible;
+            }
+            // Ctrl+H to toggle PHI (patient info) visibility
+            if i.modifiers.ctrl && i.key_pressed(egui::Key::H) {
+                self.viewport_manager.toggle_phi_hidden();
+                if self.viewport_manager.phi_hidden() {
+                    self.status = "PHI hidden".to_string();
+                    self.patient_sidebar.visible = false;
+                } else {
+                    self.status = "PHI visible".to_string();
+                }
             }
             // Ctrl+G for quick fetch from clipboard
             if i.modifiers.ctrl && i.key_pressed(egui::Key::G) {
@@ -1786,8 +1780,8 @@ impl eframe::App for SauhuApp {
 
             // Escape cancels measurement and returns to default mode (Windowing)
             if i.key_pressed(egui::Key::Escape) {
-                self.measurement_state = MeasurementState::Idle;
-                self.interaction_mode = InteractionMode::Windowing;
+                self.interaction.measurement_state = MeasurementState::Idle;
+                self.interaction.mode = InteractionMode::Windowing;
             }
 
             // Mode shortcuts (using configurable shortcuts)
@@ -1797,10 +1791,10 @@ impl eframe::App for SauhuApp {
             if shortcuts.matches(&shortcuts.length_measure, egui::Key::L, &i.modifiers)
                 && i.key_pressed(egui::Key::L)
             {
-                self.interaction_mode = match self.interaction_mode {
+                self.interaction.mode = match self.interaction.mode {
                     InteractionMode::Measure => InteractionMode::Windowing,
                     _ => {
-                        self.measurement_state = MeasurementState::Idle;
+                        self.interaction.measurement_state = MeasurementState::Idle;
                         InteractionMode::Measure
                     }
                 };
@@ -1810,10 +1804,10 @@ impl eframe::App for SauhuApp {
             if shortcuts.matches(&shortcuts.circle_roi, egui::Key::O, &i.modifiers)
                 && i.key_pressed(egui::Key::O)
             {
-                self.interaction_mode = match self.interaction_mode {
+                self.interaction.mode = match self.interaction.mode {
                     InteractionMode::CircleROI => InteractionMode::Windowing,
                     _ => {
-                        self.measurement_state = MeasurementState::Idle;
+                        self.interaction.measurement_state = MeasurementState::Idle;
                         InteractionMode::CircleROI
                     }
                 };
@@ -1828,7 +1822,7 @@ impl eframe::App for SauhuApp {
 
             // W: Toggle between Windowing and Pan modes (no shift)
             if i.key_pressed(egui::Key::W) && !i.modifiers.shift {
-                self.interaction_mode = match self.interaction_mode {
+                self.interaction.mode = match self.interaction.mode {
                     InteractionMode::Windowing => InteractionMode::Pan,
                     InteractionMode::Pan => InteractionMode::Windowing,
                     _ => InteractionMode::Windowing,
@@ -1837,10 +1831,10 @@ impl eframe::App for SauhuApp {
 
             // Shift+W: ROI-based windowing mode
             if i.key_pressed(egui::Key::W) && i.modifiers.shift {
-                self.interaction_mode = match self.interaction_mode {
+                self.interaction.mode = match self.interaction.mode {
                     InteractionMode::ROIWindowing => InteractionMode::Windowing,
                     _ => {
-                        self.measurement_state = MeasurementState::Idle;
+                        self.interaction.measurement_state = MeasurementState::Idle;
                         InteractionMode::ROIWindowing
                     }
                 };
@@ -1852,7 +1846,7 @@ impl eframe::App for SauhuApp {
             {
                 let slot = self.viewport_manager.get_active();
                 if let Some(key) = slot.annotation_key() {
-                    self.annotation_store.clear_image(&key);
+                    self.interaction.annotation_store.clear_image(&key);
                     self.status = "Annotations cleared".to_string();
                 }
             }
@@ -1889,38 +1883,38 @@ impl eframe::App for SauhuApp {
             let right_down = i.pointer.button_down(egui::PointerButton::Secondary);
             if right_down && !pointer_over_ui {
                 if let Some(pos) = i.pointer.hover_pos() {
-                    if let Some(last_y) = self.scroll_drag_last_y {
+                    if let Some(last_y) = self.interaction.scroll_drag_last_y {
                         let delta_y = pos.y - last_y;
                         // Accumulate scroll - negative delta (drag up) = scroll forward
-                        self.scroll_drag_accumulator += delta_y;
+                        self.interaction.scroll_drag_accumulator += delta_y;
                         // Threshold for triggering scroll (pixels per image) - configurable
                         let threshold = self.settings.viewer.scroll_sensitivity;
-                        while self.scroll_drag_accumulator >= threshold {
+                        while self.interaction.scroll_drag_accumulator >= threshold {
                             self.navigate(1);
-                            self.scroll_drag_accumulator -= threshold;
+                            self.interaction.scroll_drag_accumulator -= threshold;
                         }
-                        while self.scroll_drag_accumulator <= -threshold {
+                        while self.interaction.scroll_drag_accumulator <= -threshold {
                             self.navigate(-1);
-                            self.scroll_drag_accumulator += threshold;
+                            self.interaction.scroll_drag_accumulator += threshold;
                         }
                     }
-                    self.scroll_drag_last_y = Some(pos.y);
+                    self.interaction.scroll_drag_last_y = Some(pos.y);
                 }
             } else {
                 // Reset when button released or when over UI
-                self.scroll_drag_last_y = None;
-                self.scroll_drag_accumulator = 0.0;
+                self.interaction.scroll_drag_last_y = None;
+                self.interaction.scroll_drag_accumulator = 0.0;
             }
         });
 
         // Handle measurement input (clicks for length, drag for circles)
         if matches!(
-            self.interaction_mode,
+            self.interaction.mode,
             InteractionMode::Measure | InteractionMode::CircleROI | InteractionMode::ROIWindowing
         ) {
             self.handle_measurement_input(ctx);
             // Keep repainting during measurement for preview
-            if self.measurement_state.is_drawing() {
+            if self.interaction.measurement_state.is_drawing() {
                 ctx.request_repaint();
             }
         }

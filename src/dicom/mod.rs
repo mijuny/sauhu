@@ -1,7 +1,6 @@
 //! DICOM module for Sauhu
 //!
 //! Handles DICOM file parsing, pixel data extraction, and metadata.
-#![allow(dead_code)]
 #![allow(unused_imports)]
 
 mod anonymize;

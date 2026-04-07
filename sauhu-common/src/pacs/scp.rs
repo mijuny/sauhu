@@ -1,7 +1,6 @@
 //! DICOM Service Class Provider (SCP) implementation
 //!
 //! Provides C-STORE SCP for receiving images from C-MOVE operations.
-#![allow(dead_code)]
 
 use anyhow::{anyhow, Result};
 use dicom::core::{DataElement, PrimitiveValue, VR};

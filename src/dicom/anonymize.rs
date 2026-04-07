@@ -2,7 +2,6 @@
 //!
 //! Provides functionality to anonymize DICOM files by removing PHI
 //! and replacing UIDs with new compliant ones.
-#![allow(dead_code)]
 
 use anyhow::{Context, Result};
 use dicom::core::{DataElement, PrimitiveValue, Tag, VR};
@@ -93,6 +92,7 @@ impl UidGenerator {
     }
 
     /// Get the UID mapping (original -> anonymized)
+    #[allow(dead_code)]
     pub fn get_mapping(&self) -> &HashMap<String, String> {
         &self.uid_map
     }
@@ -112,6 +112,7 @@ pub struct AnonymizeConfig {
     /// Accession number prefix (e.g., "SAU")
     pub accession_prefix: String,
     /// Whether to keep patient sex
+    #[allow(dead_code)]
     pub keep_patient_sex: bool,
 }
 
@@ -132,6 +133,7 @@ pub struct AnonymizeProgress {
     pub total: u32,
     pub current_file: Option<String>,
     pub is_complete: bool,
+    #[allow(dead_code)]
     pub error: Option<String>,
 }
 
@@ -158,6 +160,7 @@ pub struct AnonymizeResult {
     /// New patient name used (comma-separated for multiple patients)
     pub new_patient_name: String,
     /// New patient ID used (first patient's ID)
+    #[allow(dead_code)]
     pub new_patient_id: String,
 }
 
@@ -343,6 +346,7 @@ pub fn anonymize_file(
 
 /// Information about an anonymized file
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct AnonymizedFileInfo {
     pub path: PathBuf,
     pub original_study_uid: String,

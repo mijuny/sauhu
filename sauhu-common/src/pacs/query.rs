@@ -1,5 +1,4 @@
 //! PACS query parameters and result types
-#![allow(dead_code)]
 
 use std::fmt;
 

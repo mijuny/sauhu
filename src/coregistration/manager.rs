@@ -1,5 +1,4 @@
 //! Coregistration manager - handles UI state and workflow
-#![allow(dead_code)]
 
 use super::optimizer::PowellOptimizer;
 use super::pipeline::{
@@ -34,6 +33,7 @@ pub enum CoregistrationMode {
         source_viewport: usize,
     },
     /// Registration completed, waiting for user to accept/reject
+    #[allow(dead_code)] // constructed by set_completed()
     Completed {
         /// Target viewport index
         target_viewport: usize,
@@ -89,6 +89,7 @@ struct RegistrationTask {
 
 /// Stored transform for applying to other series
 #[derive(Clone)]
+#[allow(dead_code)] // coregistration module API
 pub struct StoredTransform {
     /// The rigid transform
     pub transform: RigidTransform,
@@ -109,6 +110,7 @@ pub struct CoregistrationManager {
     /// Last error message (for retry dialog)
     last_error: Option<String>,
     /// Last successful transform for applying to other series
+    #[allow(dead_code)] // coregistration module API
     last_transform: Option<StoredTransform>,
 }
 
@@ -479,6 +481,7 @@ impl CoregistrationManager {
     }
 
     /// Set completion state
+    #[allow(dead_code)] // coregistration module API
     pub fn set_completed(&mut self, result: RegistrationResult) {
         if let CoregistrationMode::Running {
             target_viewport,
@@ -502,6 +505,7 @@ impl CoregistrationManager {
     }
 
     /// Get last error message
+    #[allow(dead_code)] // coregistration module API
     pub fn last_error(&self) -> Option<&str> {
         self.last_error.as_deref()
     }
@@ -512,6 +516,7 @@ impl CoregistrationManager {
     }
 
     /// Store a successful transform for later use (applying to other series)
+    #[allow(dead_code)] // coregistration module API
     pub fn store_transform(
         &mut self,
         transform: RigidTransform,
@@ -528,6 +533,7 @@ impl CoregistrationManager {
     }
 
     /// Get the stored transform (if any)
+    #[allow(dead_code)] // coregistration module API
     pub fn get_stored_transform(&self) -> Option<&StoredTransform> {
         self.last_transform.as_ref()
     }

@@ -1,14 +1,19 @@
-#![allow(dead_code)]
 
 use crate::db::{get_study, upsert_study_for_retrieval, PacsServer, RetrievalStudyInfo, Study};
 use crate::hanging_protocol::{self, SeriesCandidate};
 use crate::pacs::{DicomScp, DicomScu, ParallelRetrieveConfig, ParallelRetriever, QueryParams};
 use crate::ui::{ViewportId, ViewportLayout};
 use std::path::PathBuf;
-use std::sync::mpsc;
+use std::sync::mpsc::{self, Receiver};
 use std::thread;
 
 use super::{CurrentPatient, SauhuApp};
+
+/// Quick fetch system state (Ctrl+G PACS retrieve)
+pub(super) struct QuickFetchSystem {
+    pub(super) state: QuickFetchState,
+    pub(super) rx: Option<Receiver<QuickFetchResult>>,
+}
 
 /// State for quick fetch (Ctrl+G) operation
 #[derive(Debug, Clone, Default)]
@@ -16,6 +21,7 @@ pub(super) enum QuickFetchState {
     #[default]
     Idle,
     Querying {
+        #[allow(dead_code)]
         accession: String,
     },
     Retrieving {
@@ -24,10 +30,12 @@ pub(super) enum QuickFetchState {
         completed: u32,
         first_series_loaded: bool,
     },
+    #[allow(dead_code)]
     Opening {
         study_id: i64,
     },
     Error {
+        #[allow(dead_code)]
         message: String,
     },
 }
@@ -85,7 +93,7 @@ impl SauhuApp {
     pub(super) fn start_quick_fetch(&mut self) {
         // Don't start if already fetching
         if !matches!(
-            self.quick_fetch_state,
+            self.quick_fetch.state,
             QuickFetchState::Idle | QuickFetchState::Error { .. }
         ) {
             return;
@@ -96,7 +104,7 @@ impl SauhuApp {
             Ok(mut clipboard) => match clipboard.get_text() {
                 Ok(text) => text.trim().to_string(),
                 Err(e) => {
-                    self.quick_fetch_state = QuickFetchState::Error {
+                    self.quick_fetch.state = QuickFetchState::Error {
                         message: format!("Clipboard error: {}", e),
                     };
                     self.status = "Failed to read clipboard".to_string();
@@ -104,7 +112,7 @@ impl SauhuApp {
                 }
             },
             Err(e) => {
-                self.quick_fetch_state = QuickFetchState::Error {
+                self.quick_fetch.state = QuickFetchState::Error {
                     message: format!("Clipboard error: {}", e),
                 };
                 self.status = "Failed to access clipboard".to_string();
@@ -119,7 +127,7 @@ impl SauhuApp {
     pub(super) fn start_quick_fetch_with_accession(&mut self, accession: String) {
         // Don't start if already fetching
         if !matches!(
-            self.quick_fetch_state,
+            self.quick_fetch.state,
             QuickFetchState::Idle | QuickFetchState::Error { .. }
         ) {
             tracing::warn!(
@@ -130,7 +138,7 @@ impl SauhuApp {
         }
 
         if accession.is_empty() {
-            self.quick_fetch_state = QuickFetchState::Error {
+            self.quick_fetch.state = QuickFetchState::Error {
                 message: "Accession number is empty".to_string(),
             };
             self.status = "Accession number is empty".to_string();
@@ -141,7 +149,7 @@ impl SauhuApp {
         let (_server_id, server_config) = match self.settings.get_default_pacs_server() {
             Some(s) => s,
             None => {
-                self.quick_fetch_state = QuickFetchState::Error {
+                self.quick_fetch.state = QuickFetchState::Error {
                     message: "No PACS server configured".to_string(),
                 };
                 self.status = "No PACS server configured".to_string();
@@ -151,13 +159,13 @@ impl SauhuApp {
 
         tracing::info!("Quick fetch: AC={} from {}", accession, server_config.name);
         self.status = format!("Querying {} for AC {}...", server_config.name, accession);
-        self.quick_fetch_state = QuickFetchState::Querying {
+        self.quick_fetch.state = QuickFetchState::Querying {
             accession: accession.clone(),
         };
 
         // Create channel for results
         let (tx, rx) = mpsc::channel();
-        self.quick_fetch_rx = Some(rx);
+        self.quick_fetch.rx = Some(rx);
 
         // Build PACS server for SCU
         let pacs_server = PacsServer {
@@ -182,7 +190,9 @@ impl SauhuApp {
             match scu.find_studies(&params) {
                 Ok(results) => {
                     if results.is_empty() {
-                        let _ = tx.send(QuickFetchResult::QueryNotFound { accession });
+                        if tx.send(QuickFetchResult::QueryNotFound { accession }).is_err() {
+                            tracing::warn!("Quick fetch channel closed before query result delivered");
+                        }
                         return;
                     }
 
@@ -281,37 +291,47 @@ impl SauhuApp {
 
                             match retrieve_handle.join() {
                                 Ok(Ok(path)) => {
-                                    let _ = tx.send(QuickFetchResult::RetrieveComplete {
+                                    if tx.send(QuickFetchResult::RetrieveComplete {
                                         path,
                                         accession,
                                         study_info,
-                                    });
+                                    }).is_err() {
+                                        tracing::warn!("Quick fetch channel closed before retrieve completion delivered");
+                                    }
                                 }
                                 Ok(Err(e)) => {
-                                    let _ = tx.send(QuickFetchResult::RetrieveError {
+                                    if tx.send(QuickFetchResult::RetrieveError {
                                         message: format!("{}", e),
-                                    });
+                                    }).is_err() {
+                                        tracing::warn!("Quick fetch channel closed before retrieve error delivered");
+                                    }
                                 }
                                 Err(_) => {
-                                    let _ = tx.send(QuickFetchResult::RetrieveError {
+                                    if tx.send(QuickFetchResult::RetrieveError {
                                         message: "Retrieve thread panicked".to_string(),
-                                    });
+                                    }).is_err() {
+                                        tracing::warn!("Quick fetch channel closed before panic error delivered");
+                                    }
                                 }
                             }
 
                             scp.stop();
                         }
                         Err(e) => {
-                            let _ = tx.send(QuickFetchResult::RetrieveError {
+                            if tx.send(QuickFetchResult::RetrieveError {
                                 message: format!("Failed to start SCP: {}", e),
-                            });
+                            }).is_err() {
+                                tracing::warn!("Quick fetch channel closed before SCP error delivered");
+                            }
                         }
                     }
                 }
                 Err(e) => {
-                    let _ = tx.send(QuickFetchResult::QueryError {
+                    if tx.send(QuickFetchResult::QueryError {
                         message: format!("{}", e),
-                    });
+                    }).is_err() {
+                        tracing::warn!("Quick fetch channel closed before query error delivered");
+                    }
                 }
             }
         });
@@ -320,7 +340,7 @@ impl SauhuApp {
     /// Check for quick fetch results from background thread
     pub(super) fn check_quick_fetch_results(&mut self) {
         // Collect results first to avoid borrow issues
-        let results: Vec<QuickFetchResult> = if let Some(rx) = &self.quick_fetch_rx {
+        let results: Vec<QuickFetchResult> = if let Some(rx) = &self.quick_fetch.rx {
             let mut collected = Vec::new();
             while let Ok(result) = rx.try_recv() {
                 collected.push(result);
@@ -342,92 +362,17 @@ impl SauhuApp {
                     study_uid,
                     study_info,
                 } => {
-                    self.quick_fetch_state = QuickFetchState::Retrieving {
-                        accession: accession.clone(),
-                        description: description.clone(),
-                        completed: 0,
-                        first_series_loaded: false,
-                    };
-                    self.status = format!("Retrieving: {} ({})", description, accession);
-
-                    // Store study info for when series complete
-                    // Insert study to DB early so series can be added incrementally
-                    let storage_path = self.settings.storage_path();
-                    let study_dir = storage_path.join(study_uid.replace('.', "_"));
-                    let retrieval_info = RetrievalStudyInfo {
-                        study_instance_uid: study_info.study_uid.clone(),
-                        patient_name: study_info.patient_name.clone(),
-                        patient_id: study_info.patient_id.clone(),
-                        study_date: study_info.study_date.clone(),
-                        study_description: study_info.study_description.clone(),
-                        modality: study_info.modality.clone(),
-                        accession_number: study_info.accession_number.clone(),
-                    };
-
-                    // Insert study to DB and get study for sidebar setup
-                    // Do DB work first to avoid borrow issues
-                    let study_for_sidebar: Option<Study> = {
-                        let conn = self.db.conn();
-                        if let Ok(study_id) =
-                            upsert_study_for_retrieval(&conn, &retrieval_info, &study_dir)
-                        {
-                            tracing::info!(
-                                "Quick fetch: created study {} in DB for incremental updates",
-                                study_id
-                            );
-                            get_study(&conn, study_id).ok().flatten()
-                        } else {
-                            None
-                        }
-                    }; // conn guard dropped here
-
-                    // Now we can call mutable methods
-                    if let Some(study) = study_for_sidebar {
-                        // Set up patient context and sidebar (but don't load files yet)
-                        self.clear_patient();
-
-                        // Match hanging protocol for this study
-                        let study_mod = study.modality.as_deref().unwrap_or(&study_info.modality);
-                        let study_desc_str = study
-                            .study_description
-                            .as_deref()
-                            .unwrap_or(&study_info.study_description);
-                        if let Some(protocol) = hanging_protocol::match_protocol(
-                            &self.settings.hanging_protocol,
-                            study_mod,
-                            study_desc_str,
-                        ) {
-                            tracing::info!(
-                                "Quick fetch: hanging protocol matched: '{}' (layout: {})",
-                                protocol.name,
-                                protocol.layout
-                            );
-                            if let Some(layout) = ViewportLayout::from_config_str(&protocol.layout) {
-                                self.viewport_manager.set_layout(layout);
-                            }
-                            self.protocol_state.active_protocol = Some(protocol.clone());
-                        }
-
-                        let patient_id = study.patient_id.clone().unwrap_or_default();
-                        let patient_name = study.patient_name.clone().unwrap_or_default();
-                        self.current_patient = Some(CurrentPatient {
-                            patient_id: patient_id.clone(),
-                            patient_name: patient_name.clone(),
-                            studies: vec![study.clone()],
-                        });
-                        // Add study to sidebar with empty series (will be populated incrementally)
-                        self.patient_sidebar.add_study_for_retrieval(study);
-                    }
+                    self.handle_query_complete(accession, description, study_uid, study_info);
                 }
                 QuickFetchResult::QueryNotFound { accession } => {
-                    self.quick_fetch_state = QuickFetchState::Error {
+                    self.quick_fetch.state = QuickFetchState::Error {
                         message: format!("Not found: {}", accession),
                     };
                     self.status = format!("AC {} not found", accession);
                     clear_rx = true;
                 }
                 QuickFetchResult::QueryError { message } => {
-                    self.quick_fetch_state = QuickFetchState::Error {
+                    self.quick_fetch.state = QuickFetchState::Error {
                         message: message.clone(),
                     };
                     self.status = format!("Query error: {}", message);
@@ -439,9 +384,9 @@ impl SauhuApp {
                         ref description,
                         first_series_loaded,
                         ..
-                    } = self.quick_fetch_state.clone()
+                    } = self.quick_fetch.state.clone()
                     {
-                        self.quick_fetch_state = QuickFetchState::Retrieving {
+                        self.quick_fetch.state = QuickFetchState::Retrieving {
                             accession: accession.clone(),
                             description: description.clone(),
                             completed,
@@ -458,70 +403,21 @@ impl SauhuApp {
                     num_images,
                     storage_path,
                 } => {
-                    tracing::info!(
-                        "Quick fetch: series {} complete ({} images) at {:?}",
-                        series_description,
-                        num_images,
-                        storage_path
-                    );
-
-                    // Add series to sidebar
-                    self.patient_sidebar.add_series_from_retrieval(
+                    self.handle_series_complete(
                         &series_uid,
                         series_number,
                         &series_description,
                         &modality,
                         num_images,
-                        &storage_path,
+                        storage_path,
+                        &mut series_to_load,
                     );
-
-                    // Assign series to viewport via hanging protocol, or load first series as fallback
-                    if self.protocol_state.is_active() {
-                        let candidate = SeriesCandidate {
-                            series_uid: series_uid.clone(),
-                            description: series_description.clone(),
-                            num_images,
-                        };
-                        if let Some(slot_index) = hanging_protocol::try_assign_series(
-                            &mut self.protocol_state,
-                            &candidate,
-                        ) {
-                            tracing::info!(
-                                "Protocol assigned series '{}' to slot {}",
-                                series_description,
-                                slot_index
-                            );
-                            series_to_load.push((storage_path, slot_index));
-                        }
-                    } else {
-                        // No protocol - load first series immediately (only once)
-                        if let QuickFetchState::Retrieving {
-                            ref accession,
-                            ref description,
-                            completed,
-                            first_series_loaded,
-                        } = self.quick_fetch_state.clone()
-                        {
-                            if !first_series_loaded {
-                                series_to_load
-                                    .push((storage_path, self.viewport_manager.active_viewport()));
-                                // Mark that we've loaded the first series
-                                self.quick_fetch_state = QuickFetchState::Retrieving {
-                                    accession: accession.clone(),
-                                    description: description.clone(),
-                                    completed,
-                                    first_series_loaded: true,
-                                };
-                            }
-                        }
-                    }
                 }
                 QuickFetchResult::RetrieveComplete {
                     path,
                     accession,
                     study_info,
                 } => {
-                    // Update study path in case it differs from what we expected
                     let retrieval_info = RetrievalStudyInfo {
                         study_instance_uid: study_info.study_uid.clone(),
                         patient_name: study_info.patient_name.clone(),
@@ -534,12 +430,12 @@ impl SauhuApp {
                     let _ = upsert_study_for_retrieval(&self.db.conn(), &retrieval_info, &path);
 
                     self.status = format!("Retrieved: {}", accession);
-                    self.quick_fetch_state = QuickFetchState::Idle;
+                    self.quick_fetch.state = QuickFetchState::Idle;
                     completed_info = Some((path, study_info));
                     clear_rx = true;
                 }
                 QuickFetchResult::RetrieveError { message } => {
-                    self.quick_fetch_state = QuickFetchState::Error {
+                    self.quick_fetch.state = QuickFetchState::Error {
                         message: message.clone(),
                     };
                     self.status = format!("Retrieve error: {}", message);
@@ -549,18 +445,17 @@ impl SauhuApp {
         }
 
         if clear_rx {
-            self.quick_fetch_rx = None;
+            self.quick_fetch.rx = None;
         }
 
-        // Load series to their assigned viewports (protocol or first-series fallback)
-        // Use ScanSeriesDirectory to get proper series grouping, sorting, and sync info
+        // Load series to their assigned viewports
         for (path, viewport_id) in series_to_load {
             tracing::info!(
                 "Quick fetch: scanning series from {:?} for viewport {}",
                 path,
                 viewport_id
             );
-            let _ = self.bg_request_tx.send(
+            let _ = self.background.request_tx.send(
                 super::background::BackgroundRequest::ScanSeriesDirectory {
                     path,
                     viewport_id,
@@ -570,27 +465,173 @@ impl SauhuApp {
 
         // Handle retrieve completion: rebuild sidebar with proper series info
         if let Some((_path, study_info)) = completed_info {
-            tracing::info!("Quick fetch complete - rebuilding sidebar from DICOM files");
+            self.handle_retrieve_complete(&study_info);
+        }
+    }
 
-            // Get the study from DB (was inserted on QueryComplete)
-            let study = {
-                let conn = self.db.conn();
-                crate::db::get_studies_by_patient_id(&conn, &study_info.patient_id)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .find(|s| s.study_instance_uid == study_info.study_uid)
-            };
+    /// Handle a successful PACS query result
+    fn handle_query_complete(
+        &mut self,
+        accession: String,
+        description: String,
+        study_uid: String,
+        study_info: QuickFetchStudyInfo,
+    ) {
+        self.quick_fetch.state = QuickFetchState::Retrieving {
+            accession: accession.clone(),
+            description: description.clone(),
+            completed: 0,
+            first_series_loaded: false,
+        };
+        self.status = format!("Retrieving: {} ({})", description, accession);
 
-            if let Some(study) = study {
-                // Trigger the same LoadPatientSeries flow as DB open
-                // This re-scans files with group_files_by_series for proper
-                // series names, sorting, sync info, and filtering
-                self.patient_sidebar.request_set_patient(
-                    &study_info.patient_id,
-                    &study_info.patient_name,
-                    vec![study],
+        // Insert study to DB early so series can be added incrementally
+        let storage_path = self.settings.storage_path();
+        let study_dir = storage_path.join(study_uid.replace('.', "_"));
+        let retrieval_info = RetrievalStudyInfo {
+            study_instance_uid: study_info.study_uid.clone(),
+            patient_name: study_info.patient_name.clone(),
+            patient_id: study_info.patient_id.clone(),
+            study_date: study_info.study_date.clone(),
+            study_description: study_info.study_description.clone(),
+            modality: study_info.modality.clone(),
+            accession_number: study_info.accession_number.clone(),
+        };
+
+        // Do DB work first to avoid borrow issues
+        let study_for_sidebar: Option<Study> = {
+            let conn = self.db.conn();
+            if let Ok(study_id) = upsert_study_for_retrieval(&conn, &retrieval_info, &study_dir) {
+                tracing::info!(
+                    "Quick fetch: created study {} in DB for incremental updates",
+                    study_id
                 );
+                get_study(&conn, study_id).ok().flatten()
+            } else {
+                None
             }
+        };
+
+        if let Some(study) = study_for_sidebar {
+            self.clear_patient();
+
+            // Match hanging protocol for this study
+            let study_mod = study.modality.as_deref().unwrap_or(&study_info.modality);
+            let study_desc_str = study
+                .study_description
+                .as_deref()
+                .unwrap_or(&study_info.study_description);
+            if let Some(protocol) = hanging_protocol::match_protocol(
+                &self.settings.hanging_protocol,
+                study_mod,
+                study_desc_str,
+            ) {
+                tracing::info!(
+                    "Quick fetch: hanging protocol matched: '{}' (layout: {})",
+                    protocol.name,
+                    protocol.layout
+                );
+                if let Some(layout) = ViewportLayout::from_config_str(&protocol.layout) {
+                    self.viewport_manager.set_layout(layout);
+                }
+                self.protocol_state.active_protocol = Some(protocol.clone());
+            }
+
+            let patient_id = study.patient_id.clone().unwrap_or_default();
+            let patient_name = study.patient_name.clone().unwrap_or_default();
+            self.current_patient = Some(CurrentPatient {
+                patient_id: patient_id.clone(),
+                patient_name: patient_name.clone(),
+                studies: vec![study.clone()],
+            });
+            self.patient_sidebar.add_study_for_retrieval(study);
+        }
+    }
+
+    /// Handle a completed series during retrieval
+    fn handle_series_complete(
+        &mut self,
+        series_uid: &str,
+        series_number: Option<i32>,
+        series_description: &str,
+        modality: &str,
+        num_images: u32,
+        storage_path: PathBuf,
+        series_to_load: &mut Vec<(PathBuf, ViewportId)>,
+    ) {
+        tracing::info!(
+            "Quick fetch: series {} complete ({} images) at {:?}",
+            series_description,
+            num_images,
+            storage_path
+        );
+
+        self.patient_sidebar.add_series_from_retrieval(
+            series_uid,
+            series_number,
+            series_description,
+            modality,
+            num_images,
+            &storage_path,
+        );
+
+        // Assign series to viewport via hanging protocol, or load first series as fallback
+        if self.protocol_state.is_active() {
+            let candidate = SeriesCandidate {
+                series_uid: series_uid.to_string(),
+                description: series_description.to_string(),
+                num_images,
+            };
+            if let Some(slot_index) =
+                hanging_protocol::try_assign_series(&mut self.protocol_state, &candidate)
+            {
+                tracing::info!(
+                    "Protocol assigned series '{}' to slot {}",
+                    series_description,
+                    slot_index
+                );
+                series_to_load.push((storage_path, slot_index));
+            }
+        } else {
+            // No protocol - load first series immediately (only once)
+            if let QuickFetchState::Retrieving {
+                ref accession,
+                ref description,
+                completed,
+                first_series_loaded,
+            } = self.quick_fetch.state.clone()
+            {
+                if !first_series_loaded {
+                    series_to_load.push((storage_path, self.viewport_manager.active_viewport()));
+                    self.quick_fetch.state = QuickFetchState::Retrieving {
+                        accession: accession.clone(),
+                        description: description.clone(),
+                        completed,
+                        first_series_loaded: true,
+                    };
+                }
+            }
+        }
+    }
+
+    /// Handle retrieve completion: rebuild sidebar with proper series info
+    fn handle_retrieve_complete(&mut self, study_info: &QuickFetchStudyInfo) {
+        tracing::info!("Quick fetch complete - rebuilding sidebar from DICOM files");
+
+        let study = {
+            let conn = self.db.conn();
+            crate::db::get_studies_by_patient_id(&conn, &study_info.patient_id)
+                .unwrap_or_default()
+                .into_iter()
+                .find(|s| s.study_instance_uid == study_info.study_uid)
+        };
+
+        if let Some(study) = study {
+            self.patient_sidebar.request_set_patient(
+                &study_info.patient_id,
+                &study_info.patient_name,
+                vec![study],
+            );
         }
     }
 }

@@ -2,12 +2,10 @@
 //!
 //! Shows series from the currently opened patient, grouped by study.
 //! Each series has a thumbnail preview and smart naming.
-#![allow(dead_code)]
 
-use crate::db::{get_series_for_study, Series, Study};
-use crate::dicom::{get_middle_file, group_files_by_series, scan_directory, SeriesInfo, SyncInfo};
+use crate::db::{Series, Study};
+use crate::dicom::{get_middle_file, SeriesInfo, SyncInfo};
 use crate::ui::{SeriesAddedEvent, ThumbnailCache};
-use rusqlite::Connection;
 use std::path::PathBuf;
 
 /// Action requested by the sidebar
@@ -15,6 +13,7 @@ use std::path::PathBuf;
 pub enum SidebarAction {
     /// Load a series with its sorted file paths
     LoadSeries {
+        #[allow(dead_code)]
         series_uid: String,
         files: Vec<PathBuf>,
         name: String,
@@ -25,6 +24,7 @@ pub enum SidebarAction {
 /// Drag payload for series
 #[derive(Debug, Clone)]
 pub struct SeriesDragPayload {
+    #[allow(dead_code)]
     pub series_uid: String,
     pub files: Vec<PathBuf>,
     pub label: String,
@@ -110,54 +110,9 @@ impl PatientSidebar {
     }
 
     /// Whether series are currently loading
+    #[allow(dead_code)]
     pub fn is_loading(&self) -> bool {
         self.loading
-    }
-
-    /// Set the current patient and load their series (blocking - use request_set_patient for async)
-    #[allow(dead_code)]
-    pub fn set_patient(
-        &mut self,
-        conn: &Connection,
-        patient_id: &str,
-        patient_name: &str,
-        studies: Vec<Study>,
-    ) {
-        self.patient_id = Some(patient_id.to_string());
-        self.patient_name = Some(patient_name.to_string());
-
-        // Clear thumbnail cache when changing patient
-        self.thumbnail_cache.clear();
-
-        // Load series for each study
-        self.studies_with_series = studies
-            .into_iter()
-            .map(|study| {
-                let db_series = get_series_for_study(conn, study.id).unwrap_or_default();
-
-                // Scan the study directory and group files by series
-                let series_info = match scan_directory(&study.file_path) {
-                    Ok(files) => group_files_by_series(files),
-                    Err(e) => {
-                        tracing::warn!("Failed to scan study directory {}: {}", study.file_path, e);
-                        Vec::new()
-                    }
-                };
-
-                StudyWithSeries {
-                    study,
-                    db_series,
-                    series_info,
-                }
-            })
-            .collect();
-
-        // Sort by date (newest first)
-        self.studies_with_series.sort_by(|a, b| {
-            let date_a = a.study.study_date.as_deref().unwrap_or("");
-            let date_b = b.study.study_date.as_deref().unwrap_or("");
-            date_b.cmp(date_a)
-        });
     }
 
     /// Clear the current patient
@@ -220,6 +175,7 @@ impl PatientSidebar {
     }
 
     /// Get number of studies in the sidebar
+    #[allow(dead_code)]
     pub fn study_count(&self) -> usize {
         self.studies_with_series.len()
     }
@@ -435,8 +391,8 @@ impl PatientSidebar {
         static LAST_LOG: Mutex<Option<std::time::Instant>> = Mutex::new(None);
         let should_log = {
             let now = std::time::Instant::now();
-            let mut last = LAST_LOG.lock().unwrap();
-            if last.is_none() || now.duration_since(last.unwrap()).as_secs() >= 2 {
+            let mut last = LAST_LOG.lock().unwrap(); // Mutex poisoning = unrecoverable
+            if last.map_or(true, |t| now.duration_since(t).as_secs() >= 2) {
                 *last = Some(now);
                 true
             } else {

@@ -1,10 +1,11 @@
 //! Image caching and prefetching for smooth scrolling
 //!
 //! Provides an LRU cache for decoded DICOM images with background prefetching.
-#![allow(dead_code)]
+//! Images are stored as `Arc<DicomImage>` to avoid cloning pixel data.
 
 use crate::dicom::{DicomFile, DicomImage};
-use std::collections::{HashMap, HashSet, VecDeque};
+use indexmap::IndexMap;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -12,12 +13,14 @@ use std::thread;
 
 /// Estimate memory usage of a DicomImage in bytes
 fn estimate_memory(image: &DicomImage) -> usize {
-    std::mem::size_of::<DicomImage>() + (image.pixels.len() * 2)
+    std::mem::size_of::<DicomImage>()
+        + image.pixels.capacity() * 2 // Vec capacity, not len
+        + 256 // estimate for metadata String fields
 }
 
 /// Cached image entry with memory tracking
 struct CachedEntry {
-    image: DicomImage,
+    image: Arc<DicomImage>,
     memory_bytes: usize,
 }
 
@@ -33,11 +36,12 @@ struct PrefetchResult {
 }
 
 /// LRU Image Cache with memory-based eviction and background prefetching
+///
+/// Uses IndexMap for O(1) LRU operations (insertion-order iteration + O(1) removal).
+/// Images are stored as `Arc<DicomImage>` so callers get cheap reference-counted clones.
 pub struct ImageCache {
-    /// Cached images by file path
-    entries: HashMap<PathBuf, CachedEntry>,
-    /// LRU order (front = oldest, back = newest)
-    lru_order: VecDeque<PathBuf>,
+    /// Cached images by file path (insertion order = LRU order, oldest first)
+    entries: IndexMap<PathBuf, CachedEntry>,
     /// Current memory usage in bytes
     current_memory: usize,
     /// Maximum memory limit in bytes
@@ -56,6 +60,7 @@ pub struct ImageCache {
 
 impl ImageCache {
     /// Create new cache with memory limit in bytes
+    #[allow(dead_code)] // cache API
     pub fn new(max_memory_bytes: usize) -> Self {
         Self::with_prefetch_window(max_memory_bytes, 5, 2)
     }
@@ -73,8 +78,7 @@ impl ImageCache {
         Self::spawn_prefetch_workers(prefetch_request_rx, prefetch_result_tx);
 
         Self {
-            entries: HashMap::new(),
-            lru_order: VecDeque::new(),
+            entries: IndexMap::new(),
             current_memory: 0,
             max_memory: max_memory_bytes,
             prefetch_tx,
@@ -142,24 +146,18 @@ impl ImageCache {
         }
     }
 
-    /// Get image from cache (O(1) lookup, updates LRU order)
-    pub fn get(&mut self, path: &Path) -> Option<&DicomImage> {
+    /// Get image from cache, returning an Arc (cheap clone, no pixel copy)
+    pub fn get(&mut self, path: &Path) -> Option<Arc<DicomImage>> {
         let key = path.to_path_buf();
 
-        if self.entries.contains_key(&key) {
-            // Update LRU order - move to back (most recent)
-            self.lru_order.retain(|k| k != &key);
-            self.lru_order.push_back(key.clone());
-
-            return self.entries.get(&key).map(|e| &e.image);
+        // Remove and re-insert to move to end (most recent)
+        if let Some(entry) = self.entries.shift_remove(&key) {
+            let image = Arc::clone(&entry.image);
+            self.entries.insert(key, entry);
+            return Some(image);
         }
 
         None
-    }
-
-    /// Get a clone of the image from cache
-    pub fn get_clone(&mut self, path: &Path) -> Option<DicomImage> {
-        self.get(path).cloned()
     }
 
     /// Check if image is in cache
@@ -172,7 +170,7 @@ impl ImageCache {
         let memory = estimate_memory(&image);
 
         // Evict until we have space
-        while self.current_memory + memory > self.max_memory && !self.lru_order.is_empty() {
+        while self.current_memory + memory > self.max_memory && !self.entries.is_empty() {
             self.evict_oldest();
         }
 
@@ -180,34 +178,30 @@ impl ImageCache {
         self.pending_prefetch.remove(&path);
 
         // Update if already exists
-        if let Some(old) = self.entries.remove(&path) {
+        if let Some(old) = self.entries.shift_remove(&path) {
             self.current_memory -= old.memory_bytes;
-            self.lru_order.retain(|k| k != &path);
         }
 
         // Insert new entry
         self.current_memory += memory;
         self.entries.insert(
-            path.clone(),
+            path,
             CachedEntry {
-                image,
+                image: Arc::new(image),
                 memory_bytes: memory,
             },
         );
-        self.lru_order.push_back(path);
     }
 
     /// Evict oldest entry from cache
     fn evict_oldest(&mut self) {
-        if let Some(key) = self.lru_order.pop_front() {
-            if let Some(entry) = self.entries.remove(&key) {
-                self.current_memory -= entry.memory_bytes;
-                tracing::trace!(
-                    "Cache evicted: {:?} (freed {} KB)",
-                    key.file_name().unwrap_or_default(),
-                    entry.memory_bytes / 1024
-                );
-            }
+        if let Some((key, entry)) = self.entries.shift_remove_index(0) {
+            self.current_memory -= entry.memory_bytes;
+            tracing::trace!(
+                "Cache evicted: {:?} (freed {} KB)",
+                key.file_name().unwrap_or_default(),
+                entry.memory_bytes / 1024
+            );
         }
     }
 
@@ -283,13 +277,13 @@ impl ImageCache {
     /// Clear all cached images (call when switching patients)
     pub fn clear(&mut self) {
         self.entries.clear();
-        self.lru_order.clear();
         self.current_memory = 0;
         self.pending_prefetch.clear();
         tracing::debug!("Image cache cleared");
     }
 
     /// Get cache statistics for debugging
+    #[allow(dead_code)] // cache API
     pub fn stats(&self) -> CacheStats {
         CacheStats {
             entries: self.entries.len(),
@@ -302,6 +296,7 @@ impl ImageCache {
 
 /// Cache statistics for debugging/monitoring
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // returned by ImageCache::stats()
 pub struct CacheStats {
     pub entries: usize,
     pub memory_mb: usize,

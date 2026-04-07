@@ -9,6 +9,11 @@ use bytemuck::{Pod, Zeroable};
 use eframe::wgpu;
 use wgpu::util::DeviceExt;
 
+/// Threads per workgroup for NCC reduction shader
+const NCC_WORKGROUP_SIZE: usize = 256;
+/// Workgroup size for 3D volume resampling (4x4x4 = 64 threads)
+const RESAMPLE_WORKGROUP_SIZE: u32 = 4;
+
 /// Uniforms for transform and resampling
 ///
 /// Transform is applied in physical (mm) coordinates:
@@ -317,8 +322,7 @@ impl GpuCoregistration {
             mapped_at_creation: false,
         }));
 
-        // Calculate number of workgroups for NCC reduction (256 threads per workgroup)
-        self.num_workgroups = target_voxels.div_ceil(256) as u32;
+        self.num_workgroups = target_voxels.div_ceil(NCC_WORKGROUP_SIZE) as u32;
 
         // Create partials buffer
         let partials_size = self.num_workgroups as usize * std::mem::size_of::<NccPartials>();
@@ -465,10 +469,9 @@ impl GpuCoregistration {
             pass.set_pipeline(&self.resample_pipeline);
             pass.set_bind_group(0, &resample_bind_group, &[]);
 
-            // Dispatch with 4x4x4 workgroup size (using target dimensions)
-            let dispatch_x = (self.target_dims.0 as u32).div_ceil(4);
-            let dispatch_y = (self.target_dims.1 as u32).div_ceil(4);
-            let dispatch_z = (self.target_dims.2 as u32).div_ceil(4);
+            let dispatch_x = (self.target_dims.0 as u32).div_ceil(RESAMPLE_WORKGROUP_SIZE);
+            let dispatch_y = (self.target_dims.1 as u32).div_ceil(RESAMPLE_WORKGROUP_SIZE);
+            let dispatch_z = (self.target_dims.2 as u32).div_ceil(RESAMPLE_WORKGROUP_SIZE);
             pass.dispatch_workgroups(dispatch_x, dispatch_y, dispatch_z);
         }
 
@@ -494,10 +497,13 @@ impl GpuCoregistration {
         let buffer_slice = staging_buffer.slice(..);
         let (tx, rx) = std::sync::mpsc::channel();
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
-            tx.send(result).unwrap();
+            let _ = tx.send(result);
         });
         device.poll(wgpu::Maintain::Wait);
-        rx.recv().unwrap().expect("Failed to map buffer");
+        if let Err(e) = rx.recv() {
+            tracing::error!("GPU buffer map channel error: {}", e);
+            return f64::NEG_INFINITY;
+        }
 
         // Read partials and compute final NCC
         let data = buffer_slice.get_mapped_range();

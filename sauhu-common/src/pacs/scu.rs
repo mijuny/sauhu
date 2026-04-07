@@ -1,7 +1,6 @@
 //! DICOM Service Class User (SCU) implementation
 //!
 //! Provides C-FIND and C-MOVE operations for PACS connectivity.
-#![allow(dead_code)]
 
 use crate::PacsServerConfig;
 use crate::pacs::{QueryParams, RetrieveProgress, SeriesResult, StudyResult};
@@ -1214,6 +1213,7 @@ fn build_series_query(study_uid: &str) -> InMemDicomObject<StandardDataDictionar
     ds
 }
 
+#[allow(dead_code)] // DICOM networking utility
 fn encode_dataset(ds: &InMemDicomObject<StandardDataDictionary>) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
     ds.write_dataset_with_ts(

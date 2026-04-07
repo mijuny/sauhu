@@ -1,5 +1,4 @@
 //! Thumbnail cache for series previews
-#![allow(dead_code)]
 
 use crate::dicom::{DicomFile, DicomImage};
 use egui::{ColorImage, TextureHandle, TextureOptions};
@@ -137,6 +136,7 @@ impl ThumbnailCache {
     }
 
     /// Check if a series has a cached thumbnail
+    #[allow(dead_code)]
     pub fn has_thumbnail(&self, series_uid: &str) -> bool {
         !self.clear_pending && self.thumbnails.contains_key(series_uid)
     }

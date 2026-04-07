@@ -1,5 +1,4 @@
 //! DICOM file parsing
-#![allow(dead_code)]
 
 use anyhow::{Context, Result};
 use dicom::object::{open_file, DefaultDicomObject};
@@ -142,8 +141,9 @@ impl DicomFile {
     }
 
     /// Detect orientation from Image Orientation Patient tag
-    /// Returns "Ax", "Cor", or "Sag" based on the dominant axis
-    pub fn detect_orientation(&self) -> Option<&'static str> {
+    pub fn detect_orientation(&self) -> Option<crate::dicom::AnatomicalPlane> {
+        use crate::dicom::AnatomicalPlane;
+
         let iop = self.image_orientation_patient()?;
 
         // Row and column direction cosines
@@ -162,13 +162,13 @@ impl DicomFile {
 
         if abs_normal[2] > abs_normal[0] && abs_normal[2] > abs_normal[1] {
             // Z-axis dominant = Axial
-            Some("Ax")
+            Some(AnatomicalPlane::Axial)
         } else if abs_normal[1] > abs_normal[0] && abs_normal[1] > abs_normal[2] {
             // Y-axis dominant = Coronal
-            Some("Cor")
+            Some(AnatomicalPlane::Coronal)
         } else {
             // X-axis dominant = Sagittal
-            Some("Sag")
+            Some(AnatomicalPlane::Sagittal)
         }
     }
 
@@ -292,6 +292,7 @@ impl DicomFile {
     }
 
     /// Get Bits Stored
+    #[allow(dead_code)]
     pub fn bits_stored(&self) -> Option<u16> {
         self.object
             .element(dicom::dictionary_std::tags::BITS_STORED)

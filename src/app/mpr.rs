@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 
 use crate::dicom::{AnatomicalPlane, DicomImage, MprSeries, Volume};
 use crate::gpu::DicomRenderResources;
@@ -9,12 +8,20 @@ use std::thread;
 
 use super::SauhuApp;
 
+/// MPR (Multi-Planar Reconstruction) system state
+pub(super) struct MprSystem {
+    pub(super) pending: Option<(ViewportId, crate::dicom::AnatomicalPlane, usize)>,
+    pub(super) request_tx: Sender<MprRequest>,
+    pub(super) result_rx: Receiver<MprResult>,
+    pub(super) generating: Option<MprGeneratingState>,
+}
+
 /// Request for MPR background worker
 pub(super) enum MprRequest {
     /// Build 3D volume from DICOM images
     BuildVolume {
         viewport_id: ViewportId,
-        images: Vec<DicomImage>,
+        images: Vec<std::sync::Arc<DicomImage>>,
         generation: u64,
     },
     /// Generate reformatted slices for a plane
@@ -38,11 +45,13 @@ pub(super) enum MprResult {
     },
     /// Volume building failed
     VolumeFailed {
+        #[allow(dead_code)]
         viewport_id: ViewportId,
         error: String,
         generation: u64,
     },
     /// Progress update during series generation
+    #[allow(dead_code)]
     SeriesProgress {
         viewport_id: ViewportId,
         completed: usize,
@@ -58,6 +67,7 @@ pub(super) enum MprResult {
     },
     /// Series generation failed
     SeriesFailed {
+        #[allow(dead_code)]
         viewport_id: ViewportId,
         error: String,
         generation: u64,
@@ -76,7 +86,12 @@ pub(super) struct MprGeneratingState {
 /// Phase of MPR generation
 pub(super) enum MprPhase {
     BuildingVolume,
-    GeneratingSlices { completed: usize, total: usize },
+    GeneratingSlices {
+        #[allow(dead_code)]
+        completed: usize,
+        #[allow(dead_code)]
+        total: usize,
+    },
 }
 
 impl SauhuApp {
@@ -161,7 +176,7 @@ impl SauhuApp {
 
     /// Check if pending MPR request can now be executed (all images cached)
     pub(super) fn check_pending_mpr(&mut self) {
-        let Some((viewport_id, plane, total_needed)) = self.pending_mpr else {
+        let Some((viewport_id, plane, total_needed)) = self.mpr.pending else {
             return;
         };
 
@@ -169,11 +184,11 @@ impl SauhuApp {
         let cached_count = if let Some(slot) = self.viewport_manager.get_slot(viewport_id) {
             slot.series_files
                 .iter()
-                .filter(|path| self.image_cache.contains(path))
+                .filter(|path| self.background.image_cache.contains(path))
                 .count()
         } else {
             // Viewport no longer exists, clear pending
-            self.pending_mpr = None;
+            self.mpr.pending = None;
             return;
         };
 
@@ -193,7 +208,7 @@ impl SauhuApp {
             total_needed,
             plane
         );
-        self.pending_mpr = None;
+        self.mpr.pending = None;
 
         // Make sure this viewport is still active before setting MPR
         if self.viewport_manager.active_viewport() == viewport_id {
@@ -209,7 +224,7 @@ impl SauhuApp {
 
     /// Check for MPR generation results from background worker
     pub(super) fn check_mpr_results(&mut self) {
-        while let Ok(result) = self.mpr_result_rx.try_recv() {
+        while let Ok(result) = self.mpr.result_rx.try_recv() {
             match result {
                 MprResult::VolumeBuilt {
                     viewport_id,
@@ -217,11 +232,11 @@ impl SauhuApp {
                     generation,
                 } => {
                     // Ignore stale results from previous patient
-                    if generation != self.patient_generation {
+                    if generation != self.image_loading.patient_generation {
                         tracing::debug!(
                             "Ignoring stale VolumeBuilt (gen {} != {})",
                             generation,
-                            self.patient_generation
+                            self.image_loading.patient_generation
                         );
                         continue;
                     }
@@ -234,14 +249,14 @@ impl SauhuApp {
                     }
 
                     // Continue to series generation if we're still generating
-                    if let Some(ref state) = self.mpr_generating {
+                    if let Some(ref state) = self.mpr.generating {
                         if state.viewport_id == viewport_id {
                             let plane = state.plane;
                             let saved_window = state.saved_window;
                             let total = volume.slice_count(plane);
 
                             // Update state to generating slices (preserve saved window)
-                            self.mpr_generating = Some(MprGeneratingState {
+                            self.mpr.generating = Some(MprGeneratingState {
                                 viewport_id,
                                 plane,
                                 phase: MprPhase::GeneratingSlices {
@@ -252,11 +267,11 @@ impl SauhuApp {
                             });
                             self.status = format!("Generating {} slices...", plane);
 
-                            let _ = self.mpr_request_tx.send(MprRequest::GenerateSeries {
+                            let _ = self.mpr.request_tx.send(MprRequest::GenerateSeries {
                                 viewport_id,
                                 volume,
                                 plane,
-                                generation: self.patient_generation,
+                                generation: self.image_loading.patient_generation,
                             });
                         }
                     }
@@ -266,11 +281,11 @@ impl SauhuApp {
                     error,
                     generation,
                 } => {
-                    if generation != self.patient_generation {
+                    if generation != self.image_loading.patient_generation {
                         continue;
                     }
                     tracing::warn!("MPR volume build failed: {}", error);
-                    self.mpr_generating = None;
+                    self.mpr.generating = None;
                     self.status = error;
                 }
                 MprResult::SeriesProgress {
@@ -279,10 +294,10 @@ impl SauhuApp {
                     total,
                     generation,
                 } => {
-                    if generation != self.patient_generation {
+                    if generation != self.image_loading.patient_generation {
                         continue;
                     }
-                    if let Some(ref mut state) = self.mpr_generating {
+                    if let Some(ref mut state) = self.mpr.generating {
                         if state.viewport_id == viewport_id {
                             state.phase = MprPhase::GeneratingSlices { completed, total };
                             self.status = format!("Generating slices ({}/{})...", completed, total);
@@ -295,11 +310,11 @@ impl SauhuApp {
                     series,
                     generation,
                 } => {
-                    if generation != self.patient_generation {
+                    if generation != self.image_loading.patient_generation {
                         tracing::debug!(
                             "Ignoring stale SeriesGenerated (gen {} != {})",
                             generation,
-                            self.patient_generation
+                            self.image_loading.patient_generation
                         );
                         continue;
                     }
@@ -311,10 +326,10 @@ impl SauhuApp {
                     );
 
                     // Extract saved window before clearing state
-                    let saved_window = self.mpr_generating.as_ref().map(|s| s.saved_window);
+                    let saved_window = self.mpr.generating.as_ref().map(|s| s.saved_window);
 
                     // Clear generating state
-                    self.mpr_generating = None;
+                    self.mpr.generating = None;
 
                     if let Some(slot) = self.viewport_manager.get_slot_mut(viewport_id) {
                         // Set the plane and series
@@ -331,7 +346,7 @@ impl SauhuApp {
                         let middle_idx = series.len() / 2;
                         slot.mpr_state.slice_index = middle_idx;
                         if let Some(img) = series.images.get(middle_idx) {
-                            slot.viewport.set_image(img.clone());
+                            slot.viewport.set_image(Arc::clone(img));
                         }
 
                         // Restore saved window level (after set_image which resets to defaults)
@@ -347,11 +362,11 @@ impl SauhuApp {
                     error,
                     generation,
                 } => {
-                    if generation != self.patient_generation {
+                    if generation != self.image_loading.patient_generation {
                         continue;
                     }
                     tracing::warn!("MPR series generation failed: {}", error);
-                    self.mpr_generating = None;
+                    self.mpr.generating = None;
                     self.status = error;
                 }
             }
@@ -387,25 +402,25 @@ impl SauhuApp {
                 // Reload current original image
                 let current_idx = slot.current_index;
                 if let Some(path) = slot.series_files.get(current_idx) {
-                    if let Some(image) = self.image_cache.get_clone(path) {
+                    if let Some(image) = self.background.image_cache.get(path) {
                         slot.viewport.set_image(image);
                     }
                 }
                 self.status = "MPR: Original view".to_string();
             }
             // Cancel any ongoing MPR generation
-            let _ = self.mpr_request_tx.send(MprRequest::Cancel);
-            self.mpr_generating = None;
+            let _ = self.mpr.request_tx.send(MprRequest::Cancel);
+            self.mpr.generating = None;
             return;
         }
 
         // If we're already generating for this plane, ignore duplicate requests
-        if let Some(ref state) = self.mpr_generating {
+        if let Some(ref state) = self.mpr.generating {
             if state.viewport_id == viewport_id && state.plane == plane {
                 return;
             }
             // Different plane requested - cancel current and start new
-            let _ = self.mpr_request_tx.send(MprRequest::Cancel);
+            let _ = self.mpr.request_tx.send(MprRequest::Cancel);
         }
 
         // Build volume if not already built
@@ -415,16 +430,16 @@ impl SauhuApp {
             let series_files: Vec<_> = slot.series_files.clone();
 
             // Load all images from cache
-            let mut images: Vec<crate::dicom::DicomImage> = Vec::new();
+            let mut images: Vec<std::sync::Arc<crate::dicom::DicomImage>> = Vec::new();
             for path in &series_files {
-                if let Some(img) = self.image_cache.get_clone(path) {
+                if let Some(img) = self.background.image_cache.get(path) {
                     images.push(img);
                 }
             }
 
             // Require ALL images to be cached before building volume
             if images.len() < series_len {
-                self.pending_mpr = Some((viewport_id, plane, series_len));
+                self.mpr.pending = Some((viewport_id, plane, series_len));
                 self.status = format!(
                     "MPR: Waiting for images ({}/{}) - will generate automatically...",
                     images.len(),
@@ -439,10 +454,10 @@ impl SauhuApp {
             }
 
             // Clear pending MPR since we're now processing it
-            self.pending_mpr = None;
+            self.mpr.pending = None;
 
             // Set generating state and send async request
-            self.mpr_generating = Some(MprGeneratingState {
+            self.mpr.generating = Some(MprGeneratingState {
                 viewport_id,
                 plane,
                 phase: MprPhase::BuildingVolume,
@@ -450,23 +465,26 @@ impl SauhuApp {
             });
             self.status = "Building 3D volume...".to_string();
 
-            let _ = self.mpr_request_tx.send(MprRequest::BuildVolume {
+            let _ = self.mpr.request_tx.send(MprRequest::BuildVolume {
                 viewport_id,
                 images,
-                generation: self.patient_generation,
+                generation: self.image_loading.patient_generation,
             });
             return;
         }
 
         // Volume exists - send series generation request
-        let volume = existing_volume.unwrap();
+        let Some(volume) = existing_volume else {
+            tracing::error!("MPR: expected volume to exist but it was None");
+            return;
+        };
 
         // Clear pending MPR since we're now processing it
-        self.pending_mpr = None;
+        self.mpr.pending = None;
 
         // Set generating state
         let total = volume.slice_count(plane);
-        self.mpr_generating = Some(MprGeneratingState {
+        self.mpr.generating = Some(MprGeneratingState {
             viewport_id,
             plane,
             phase: MprPhase::GeneratingSlices {
@@ -477,11 +495,11 @@ impl SauhuApp {
         });
         self.status = format!("Generating {} slices...", plane);
 
-        let _ = self.mpr_request_tx.send(MprRequest::GenerateSeries {
+        let _ = self.mpr.request_tx.send(MprRequest::GenerateSeries {
             viewport_id,
             volume,
             plane,
-            generation: self.patient_generation,
+            generation: self.image_loading.patient_generation,
         });
     }
 

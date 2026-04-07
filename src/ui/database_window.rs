@@ -1,7 +1,6 @@
 //! Database Window
 //!
 //! Browse local patients and query PACS for studies.
-#![allow(dead_code)]
 
 use crate::config::Settings;
 use crate::db::{
@@ -25,6 +24,7 @@ use walkdir::WalkDir;
 
 /// Patient info aggregated from studies
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // planned patient grouping in database UI
 pub struct PatientInfo {
     pub patient_id: String,
     pub patient_name: String,
@@ -153,6 +153,7 @@ pub struct SeriesAddedEvent {
     /// Number of images
     pub num_images: u32,
     /// Path to series files
+    #[allow(dead_code)]
     pub storage_path: PathBuf,
 }
 
@@ -181,6 +182,7 @@ enum RetrieveState {
 #[derive(Clone)]
 struct AnonymizePatientGroup {
     /// Original patient ID
+    #[allow(dead_code)]
     patient_id: String,
     /// Original patient name
     patient_name: String,
@@ -209,6 +211,7 @@ enum AnonymizeState {
         num_patients: usize,
     },
     /// Anonymization completed
+    #[allow(dead_code)] // completion state handling planned
     Complete {
         files_processed: u32,
         /// List of new patient names created
@@ -236,6 +239,7 @@ enum RetrieveResult {
     Progress(AggregateProgress),
     Complete {
         path: PathBuf,
+        #[allow(dead_code)]
         study_info: StudyImportInfo,
     },
     Error(String),
@@ -290,6 +294,7 @@ impl DatabaseWindow {
     }
 
     /// Load local studies from database (blocking - use request_load_studies for async)
+    #[allow(dead_code)] // synchronous alternative to request_load_studies
     pub fn load_local_studies(&mut self, conn: &Connection) {
         match get_all_studies_with_image_count(conn) {
             Ok(studies) => {
@@ -325,6 +330,7 @@ impl DatabaseWindow {
     }
 
     /// Whether studies are currently loading
+    #[allow(dead_code)] // public API for study loading state
     pub fn is_loading_studies(&self) -> bool {
         self.loading_studies
     }
@@ -1066,10 +1072,12 @@ impl DatabaseWindow {
                         }
                     }
                     Err(e) => {
-                        let _ = result_tx.send(AnonymizeProgressResult::Error(format!(
+                        if result_tx.send(AnonymizeProgressResult::Error(format!(
                             "Failed to anonymize patient {}: {}",
                             group.patient_name, e
-                        )));
+                        ))).is_err() {
+                            tracing::warn!("Anonymize channel closed before error delivered");
+                        }
                         let _ = forwarder.join();
                         return;
                     }
@@ -1081,7 +1089,9 @@ impl DatabaseWindow {
             // Store all new patient names for the result
             combined_result.new_patient_name = new_patient_names.join(", ");
 
-            let _ = result_tx.send(AnonymizeProgressResult::Complete(combined_result));
+            if result_tx.send(AnonymizeProgressResult::Complete(combined_result)).is_err() {
+                tracing::warn!("Anonymize channel closed before completion delivered");
+            }
             let _ = forwarder.join();
         });
     }
@@ -1605,7 +1615,9 @@ impl DatabaseWindow {
                 Ok(results) => QueryResult::Success(results),
                 Err(e) => QueryResult::Error(format!("{}", e)),
             };
-            let _ = tx.send(result);
+            if tx.send(result).is_err() {
+                tracing::warn!("PACS query channel closed before result delivered");
+            }
         });
     }
 
@@ -1729,24 +1741,32 @@ impl DatabaseWindow {
                     match retrieve_handle.join() {
                         Ok(Ok(path)) => {
                             if !cancel_flag.load(Ordering::SeqCst) {
-                                let _ = tx.send(RetrieveResult::Complete { path, study_info });
+                                if tx.send(RetrieveResult::Complete { path, study_info }).is_err() {
+                                    tracing::warn!("Retrieve channel closed before completion delivered");
+                                }
                             }
                         }
                         Ok(Err(e)) => {
                             if !cancel_flag.load(Ordering::SeqCst) {
-                                let _ = tx.send(RetrieveResult::Error(format!("{}", e)));
+                                if tx.send(RetrieveResult::Error(format!("{}", e))).is_err() {
+                                    tracing::warn!("Retrieve channel closed before error delivered");
+                                }
                             }
                         }
                         Err(_) => {
-                            let _ = tx.send(RetrieveResult::Error(
+                            if tx.send(RetrieveResult::Error(
                                 "Retrieve thread panicked".to_string(),
-                            ));
+                            )).is_err() {
+                                tracing::warn!("Retrieve channel closed before panic error delivered");
+                            }
                         }
                     }
                     scp.stop();
                 }
                 Err(e) => {
-                    let _ = tx.send(RetrieveResult::Error(format!("Failed to start SCP: {}", e)));
+                    if tx.send(RetrieveResult::Error(format!("Failed to start SCP: {}", e))).is_err() {
+                        tracing::warn!("Retrieve channel closed before SCP error delivered");
+                    }
                 }
             }
         });
@@ -1929,6 +1949,7 @@ impl DatabaseWindow {
 }
 
 /// Group studies by patient
+#[allow(dead_code)] // planned patient grouping in database UI
 pub fn group_studies_by_patient(studies: Vec<Study>) -> Vec<PatientInfo> {
     let mut patient_map: HashMap<String, PatientInfo> = HashMap::new();
 
@@ -1977,6 +1998,7 @@ fn format_date(date: &str) -> String {
 }
 
 /// Scan a directory for DICOM files and import series into the database
+#[allow(dead_code)] // planned series import functionality
 fn import_series_from_path(conn: &Connection, study_id: i64, path: &PathBuf, study_uid: &str) {
     use dicom::dictionary_std::tags;
     use dicom::object::open_file;
@@ -2083,6 +2105,7 @@ fn import_series_from_path(conn: &Connection, study_id: i64, path: &PathBuf, stu
     }
 }
 
+#[allow(dead_code)] // used by import_series_from_path
 struct SeriesImportInfo {
     series_instance_uid: String,
     series_number: Option<i32>,

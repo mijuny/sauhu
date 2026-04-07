@@ -1,10 +1,10 @@
 //! DICOM texture handling for GPU rendering
-#![allow(dead_code)]
 
 use crate::dicom::DicomImage;
 use eframe::wgpu;
 
 /// GPU texture holding raw DICOM pixel data
+#[allow(dead_code)] // fields accessed via GPU bind groups, not Rust reads
 pub struct DicomTexture {
     /// The wgpu texture
     pub texture: wgpu::Texture,

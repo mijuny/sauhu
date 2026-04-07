@@ -1,7 +1,6 @@
 //! Configuration file management
 //!
 //! Settings are stored in `~/.config/sauhu/config.toml`
-#![allow(dead_code)]
 
 use crate::hanging_protocol::HangingProtocol;
 use anyhow::{Context, Result};
@@ -491,6 +490,7 @@ impl Settings {
     }
 
     /// Print current configuration summary
+    #[allow(dead_code)] // useful for CLI diagnostics
     pub fn print_summary(&self) {
         println!("Sauhu Configuration:");
         println!(

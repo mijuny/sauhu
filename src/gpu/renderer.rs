@@ -1,5 +1,4 @@
 //! GPU renderer for DICOM windowing
-#![allow(dead_code)]
 
 use super::texture::DicomTexture;
 use bytemuck::{Pod, Zeroable};
@@ -356,6 +355,7 @@ impl DicomRenderResources {
     }
 
     /// Set DICOM texture for a specific viewport slot (called when new image is loaded)
+    #[allow(dead_code)] // GPU rendering API
     pub fn set_texture_for_slot(
         &mut self,
         device: &wgpu::Device,
@@ -390,11 +390,13 @@ impl DicomRenderResources {
     }
 
     /// Set DICOM texture for slot 0 (backwards compatibility)
+    #[allow(dead_code)] // GPU rendering API
     pub fn set_texture(&mut self, device: &wgpu::Device, texture: DicomTexture) {
         self.set_texture_for_slot(device, 0, texture);
     }
 
     /// Clear texture from a specific slot
+    #[allow(dead_code)] // GPU rendering API
     pub fn clear_texture_slot(&mut self, slot: usize) {
         if slot < MAX_TEXTURE_SLOTS {
             self.dicom_textures[slot] = None;
@@ -548,16 +550,19 @@ impl DicomRenderResources {
     }
 
     /// Update uniforms for slot 0 (backwards compatibility)
+    #[allow(dead_code)] // GPU rendering API
     pub fn update_uniforms(&self, queue: &wgpu::Queue, uniforms: WindowingUniforms) {
         self.update_uniforms_for_slot(queue, 0, uniforms);
     }
 
     /// Check if resources have a texture loaded in a specific slot
+    #[allow(dead_code)] // GPU rendering API
     pub fn has_texture_in_slot(&self, slot: usize) -> bool {
         slot < MAX_TEXTURE_SLOTS && self.dicom_textures[slot].is_some()
     }
 
     /// Check if resources have a texture loaded in slot 0 (backwards compatibility)
+    #[allow(dead_code)] // GPU rendering API
     pub fn has_texture(&self) -> bool {
         self.has_texture_in_slot(0)
     }
@@ -655,6 +660,7 @@ impl DicomRenderResources {
     }
 
     /// Clear fusion bind group for a slot
+    #[allow(dead_code)] // GPU rendering API
     pub fn clear_fusion_bind_group(&mut self, slot: usize) {
         if slot < MAX_TEXTURE_SLOTS {
             self.fusion_bind_groups[slot] = None;

@@ -1,0 +1,92 @@
+# Changelog
+
+## 2026-04-07 21:12 -- Fix MPR reference lines and coregistration geometry
+
+### Fixed
+
+- **MPR reference lines inverted on coronal/sagittal views**: The `resample()`
+  function hardcoded `(0..d).rev()` for the Z-axis, assuming volume z-index
+  always increases from inferior to superior. When `slice_direction.z < 0`
+  (z=0 is most superior), this put inferior at pixel row 0 (top of image).
+  The `compute_image_plane()` geometry derived from the raw volume directions
+  then described the opposite layout, causing `ImagePlane::intersect()` to
+  compute reference line positions that appeared inverted on screen.
+
+  Fix: both `resample()` and `compute_image_plane()` now check `z_sign` from
+  `get_axis_direction(PatientAxis::Z)`. The resample only reverses when
+  z_sign > 0; `compute_image_plane` places the position and col_direction
+  accordingly. Both always produce superior at pixel row 0.
+
+  Same fix applied to X-axis reversal in sagittal acquisition resampling.
+
+- **Coregistration reference lines**: `apply_transform_to_volume()` kept the
+  source volume's dimensions and spacing while copying the target's origin and
+  directions, creating a geometry mismatch. Fix: resample onto the target's
+  exact grid (target dimensions, spacing, origin, and directions) so both
+  volumes are dimensionally identical.
+
+### Removed
+
+- `Volume::is_coregistered` field and associated reference line inversion hack
+  in `calculate_mpr_reference_lines()`. No longer needed since the geometry is
+  now fully consistent.
+
+## 2026-04-07 17:00 -- Anonymous viewing mode
+
+### Added
+
+- **Anonymous viewing mode** (Ctrl+H): Hides all patient identifying information
+  (name, ID, sex, age, study description, date) from viewport overlays. Also
+  hides the patient sidebar. Press Ctrl+H again to restore.
+
+## 2026-04-07 15:00 -- Refactoring and cleanup
+
+### Changed
+
+- **Type-safe orientations**: Replaced stringly-typed orientation values
+  ("Ax", "Cor", "Sag") with `AnatomicalPlane` enum throughout the codebase.
+  `detect_orientation()` in both parser and series_utils now returns
+  `Option<AnatomicalPlane>`. Eliminates a class of typo-related bugs.
+
+- **O(1) LRU cache**: Replaced `HashMap` + `VecDeque` (O(n) per access via
+  `retain()`) with `IndexMap` for true O(1) LRU eviction and promotion.
+
+- **Arc-wrapped images**: `ImageCache` now stores `Arc<DicomImage>`. Viewport
+  holds `Arc<DicomImage>` instead of owned copies. Eliminates deep cloning of
+  pixel data (512x512 x 2 bytes per scroll event) across cache lookups,
+  viewport updates, and MPR image display.
+
+- **SauhuApp decomposition**: Broke the 31-field god struct into 5 sub-systems:
+  `MprSystem`, `QuickFetchSystem`, `BackgroundSystem`, `ImageLoadingSystem`,
+  `InteractionState`. Top-level fields reduced from 31 to 19.
+
+- **Long function extraction**: Split `check_quick_fetch_results()` (~275 lines)
+  into focused handlers (`handle_query_complete`, `handle_series_complete`,
+  `handle_retrieve_complete`). Extracted `compute_slice_location()` from
+  `group_files_by_series()`.
+
+- **Improved memory estimation**: Cache now accounts for `Vec` capacity overhead
+  and metadata string allocations, not just pixel buffer length.
+
+### Fixed
+
+- **Unsafe unwrap/expect calls**: Replaced panicking unwraps in GPU buffer
+  mapping (`gpu/coregistration.rs`), MPR volume handling (`app/mpr.rs`),
+  fusion rendering (`ui/viewport.rs`), and sidebar logging
+  (`ui/patient_sidebar.rs`) with proper error handling or safe patterns.
+
+### Removed
+
+- Dead blocking `set_patient()` method in `PatientSidebar` (replaced by async
+  `request_set_patient()` path).
+- `short_to_full_orientation()` helper (replaced by `AnatomicalPlane::full_name()`).
+- `ImageCache::get_clone()` method (callers use `Arc::clone` via `get()`).
+
+### Internal
+
+- Named constants for coregistration HU thresholds (`CT_BRAIN_HU_MIN/MAX`,
+  `CT_BODY_HU_MIN/MAX`) and GPU workgroup sizes (`NCC_WORKGROUP_SIZE`,
+  `RESAMPLE_WORKGROUP_SIZE`).
+- Added `indexmap` dependency.
+- `Volume::from_series()` now accepts `&[impl Borrow<DicomImage>]` to work
+  with both `Vec<DicomImage>` and `Vec<Arc<DicomImage>>`.

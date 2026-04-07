@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 
 use crate::coregistration::{apply_transform_to_volume, RegistrationConfig, RegistrationResult};
 use crate::dicom::{AnatomicalPlane, MprSeries};
@@ -83,7 +82,7 @@ impl SauhuApp {
                                         source_slot.mpr_state.slice_index = display_idx;
 
                                         if let Some(img) = mpr_arc.images.get(display_idx) {
-                                            source_slot.viewport.set_image_keep_view(img.clone());
+                                            source_slot.viewport.set_image_keep_view(std::sync::Arc::clone(img));
                                         }
 
                                         tracing::info!(

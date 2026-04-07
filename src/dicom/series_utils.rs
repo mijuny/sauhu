@@ -1,7 +1,6 @@
 //! Series utilities for grouping, sorting, and naming
-#![allow(dead_code)]
 
-use crate::dicom::DicomFile;
+use crate::dicom::{AnatomicalPlane, DicomFile};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -10,7 +9,7 @@ use std::path::{Path, PathBuf};
 pub struct SyncInfo {
     pub frame_of_reference_uid: Option<String>,
     pub study_instance_uid: Option<String>,
-    pub orientation: Option<&'static str>,
+    pub orientation: Option<AnatomicalPlane>,
     pub slice_locations: Vec<Option<f64>>,
 }
 
@@ -35,6 +34,7 @@ pub struct SeriesInfo {
     /// Parsed/formatted series name
     pub display_name: String,
     /// Modality (MR, CT, etc.)
+    #[allow(dead_code)]
     pub modality: Option<String>,
     /// Series number
     pub series_number: Option<i32>,
@@ -44,8 +44,8 @@ pub struct SeriesInfo {
     pub frame_of_reference_uid: Option<String>,
     /// Study Instance UID (for sync grouping)
     pub study_instance_uid: Option<String>,
-    /// Orientation (Ax/Cor/Sag) from DICOM tag
-    pub orientation: Option<&'static str>,
+    /// Orientation from DICOM tag
+    pub orientation: Option<AnatomicalPlane>,
     /// Slice locations for each file (same order as files, for sync scrolling)
     pub slice_locations: Vec<Option<f64>>,
 }
@@ -63,7 +63,7 @@ struct SortableFile {
     pixel_spacing: Option<(f64, f64)>,
     /// Image dimensions (rows, columns)
     image_dimensions: Option<(u32, u32)>,
-    orientation: Option<&'static str>,
+    orientation: Option<AnatomicalPlane>,
 }
 
 /// Series metadata collected from first file
@@ -71,7 +71,7 @@ struct SeriesMetadata {
     description: Option<String>,
     modality: Option<String>,
     series_number: Option<i32>,
-    orientation: Option<&'static str>,
+    orientation: Option<AnatomicalPlane>,
     frame_of_reference_uid: Option<String>,
     study_instance_uid: Option<String>,
 }
@@ -174,65 +174,8 @@ pub fn group_files_by_series(files: Vec<DicomFile>) -> Vec<SeriesInfo> {
             // Compute slice locations at IMAGE CENTER for proper sync with MPR
             // For gantry-tilted acquisitions, corner position differs from center position.
             // Using center ensures tilted regular series sync correctly with untilted MPR.
-            let slice_locations: Vec<Option<f64>> = files
-                .iter()
-                .map(|f| {
-                    // Compute center position if we have all geometry data
-                    let center_coord = match (
-                        f.image_position,
-                        f.image_orientation,
-                        f.pixel_spacing,
-                        f.image_dimensions,
-                    ) {
-                        (
-                            Some((x, y, z)),
-                            Some(iop),
-                            Some((row_sp, col_sp)),
-                            Some((rows, cols)),
-                        ) => {
-                            // ImageOrientationPatient: [row_x, row_y, row_z, col_x, col_y, col_z]
-                            // row direction points along columns (horizontal, to the right)
-                            // col direction points along rows (vertical, downward)
-                            let row_dir = (iop[0], iop[1], iop[2]);
-                            let col_dir = (iop[3], iop[4], iop[5]);
-
-                            // Move from corner to center:
-                            // - Half columns along row direction (using col_spacing)
-                            // - Half rows along col direction (using row_spacing)
-                            let half_cols = cols as f64 / 2.0;
-                            let half_rows = rows as f64 / 2.0;
-
-                            let center_x =
-                                x + half_cols * col_sp * row_dir.0 + half_rows * row_sp * col_dir.0;
-                            let center_y =
-                                y + half_cols * col_sp * row_dir.1 + half_rows * row_sp * col_dir.1;
-                            let center_z =
-                                z + half_cols * col_sp * row_dir.2 + half_rows * row_sp * col_dir.2;
-
-                            Some((center_x, center_y, center_z))
-                        }
-                        _ => None, // Fall back to corner position if geometry incomplete
-                    };
-
-                    // Use center coordinate based on orientation, fall back to corner or SliceLocation
-                    match (center_coord, f.image_position, f.orientation) {
-                        // Center position available - use appropriate coordinate
-                        (Some((cx, _, _)), _, Some("Sag")) => Some(cx),
-                        (Some((_, cy, _)), _, Some("Cor")) => Some(cy),
-                        (Some((_, _, cz)), _, Some("Ax")) => Some(cz),
-                        (Some((_, _, cz)), _, _) => Some(cz), // Default to Z for unknown orientation
-
-                        // Fall back to corner position (ImagePositionPatient)
-                        (None, Some((x, _, _)), Some("Sag")) => Some(x),
-                        (None, Some((_, y, _)), Some("Cor")) => Some(y),
-                        (None, Some((_, _, z)), Some("Ax")) => Some(z),
-                        (None, Some((_, _, z)), _) => Some(z),
-
-                        // Last resort: DICOM SliceLocation tag
-                        (None, None, _) => f.slice_location,
-                    }
-                })
-                .collect();
+            let slice_locations: Vec<Option<f64>> =
+                files.iter().map(compute_slice_location).collect();
 
             SeriesInfo {
                 series_uid,
@@ -267,6 +210,49 @@ pub fn group_files_by_series(files: Vec<DicomFile>) -> Vec<SeriesInfo> {
     result
 }
 
+/// Compute the slice location for a file using image center position.
+///
+/// For gantry-tilted acquisitions, the corner position (ImagePositionPatient)
+/// differs from the center position. Using center ensures tilted regular series
+/// sync correctly with untilted MPR.
+fn compute_slice_location(f: &SortableFile) -> Option<f64> {
+    // Compute center position if we have all geometry data
+    let center_coord = match (
+        f.image_position,
+        f.image_orientation,
+        f.pixel_spacing,
+        f.image_dimensions,
+    ) {
+        (Some((x, y, z)), Some(iop), Some((row_sp, col_sp)), Some((rows, cols))) => {
+            let row_dir = (iop[0], iop[1], iop[2]);
+            let col_dir = (iop[3], iop[4], iop[5]);
+            let half_cols = cols as f64 / 2.0;
+            let half_rows = rows as f64 / 2.0;
+
+            let center_x = x + half_cols * col_sp * row_dir.0 + half_rows * row_sp * col_dir.0;
+            let center_y = y + half_cols * col_sp * row_dir.1 + half_rows * row_sp * col_dir.1;
+            let center_z = z + half_cols * col_sp * row_dir.2 + half_rows * row_sp * col_dir.2;
+
+            Some((center_x, center_y, center_z))
+        }
+        _ => None,
+    };
+
+    match (center_coord, f.image_position, f.orientation) {
+        (Some((cx, _, _)), _, Some(AnatomicalPlane::Sagittal)) => Some(cx),
+        (Some((_, cy, _)), _, Some(AnatomicalPlane::Coronal)) => Some(cy),
+        (Some((_, _, cz)), _, Some(AnatomicalPlane::Axial)) => Some(cz),
+        (Some((_, _, cz)), _, _) => Some(cz),
+
+        (None, Some((x, _, _)), Some(AnatomicalPlane::Sagittal)) => Some(x),
+        (None, Some((_, y, _)), Some(AnatomicalPlane::Coronal)) => Some(y),
+        (None, Some((_, _, z)), Some(AnatomicalPlane::Axial)) => Some(z),
+        (None, Some((_, _, z)), _) => Some(z),
+
+        (None, None, _) => f.slice_location,
+    }
+}
+
 /// Get the middle file path from a series (for thumbnail)
 pub fn get_middle_file(files: &[PathBuf]) -> Option<&Path> {
     if files.is_empty() {
@@ -277,6 +263,7 @@ pub fn get_middle_file(files: &[PathBuf]) -> Option<&Path> {
 }
 
 /// Parse series description into a readable display name
+#[allow(dead_code)]
 pub fn parse_series_name(description: &str, modality: Option<&str>) -> String {
     parse_series_name_with_orientation(description, modality, None)
 }
@@ -285,13 +272,12 @@ pub fn parse_series_name(description: &str, modality: Option<&str>) -> String {
 pub fn parse_series_name_with_orientation(
     description: &str,
     modality: Option<&str>,
-    dicom_orientation: Option<&str>,
+    dicom_orientation: Option<AnatomicalPlane>,
 ) -> String {
     if description.is_empty() {
         // Even with empty description, try to build name from orientation
         if let Some(orient) = dicom_orientation {
-            let orient_full = short_to_full_orientation(orient);
-            return format!("{} {}", modality.unwrap_or("Series"), orient_full);
+            return format!("{} {}", modality.unwrap_or("Series"), orient);
         }
         return modality.unwrap_or("Series").to_string();
     }
@@ -316,7 +302,7 @@ pub fn parse_series_name_with_orientation(
 fn parse_mr_sequence_name(
     desc_upper: &str,
     original: &str,
-    dicom_orientation: Option<&str>,
+    dicom_orientation: Option<AnatomicalPlane>,
 ) -> String {
     let mut parts: Vec<String> = Vec::new();
 
@@ -387,7 +373,7 @@ fn parse_mr_sequence_name(
 
     // Add orientation at the end with full name
     if let Some(o) = orientation {
-        parts.push(short_to_full_orientation(o).to_string());
+        parts.push(o.full_name().to_string());
     }
 
     // If we found components, join them
@@ -397,16 +383,6 @@ fn parse_mr_sequence_name(
 
     // Fallback: clean the original name
     clean_series_name(original)
-}
-
-/// Convert short orientation to full name
-fn short_to_full_orientation(short: &str) -> &'static str {
-    match short {
-        "Ax" => "Axial",
-        "Cor" => "Coronal",
-        "Sag" => "Sagittal",
-        _ => "Unknown",
-    }
 }
 
 /// Detect MR weighting from description
@@ -436,14 +412,14 @@ fn detect_weighting(desc: &str) -> Option<&'static str> {
 }
 
 /// Detect orientation from description
-fn detect_orientation(desc: &str) -> Option<&'static str> {
+fn detect_orientation(desc: &str) -> Option<AnatomicalPlane> {
     // Axial patterns
     if desc.contains("AX") || desc.contains("TRA") || desc.contains("TRANSV") {
-        return Some("Ax");
+        return Some(AnatomicalPlane::Axial);
     }
     // Coronal patterns
     if desc.contains("COR") {
-        return Some("Cor");
+        return Some(AnatomicalPlane::Coronal);
     }
     // Sagittal patterns - check for various forms
     if desc.contains("SAGITTAL")
@@ -453,7 +429,7 @@ fn detect_orientation(desc: &str) -> Option<&'static str> {
         || desc.ends_with("SAG")
         || desc.starts_with("SAG")
     {
-        return Some("Sag");
+        return Some(AnatomicalPlane::Sagittal);
     }
     None
 }
@@ -531,12 +507,12 @@ mod tests {
     fn test_parse_mr_names_with_dicom_orientation() {
         // When description has no orientation, use DICOM fallback
         assert_eq!(
-            parse_series_name_with_orientation("T2_TSE", Some("MR"), Some("Sag")),
+            parse_series_name_with_orientation("T2_TSE", Some("MR"), Some(AnatomicalPlane::Sagittal)),
             "T2 Sagittal"
         );
         // When description has orientation, it takes precedence
         assert_eq!(
-            parse_series_name_with_orientation("T2_TSE_AX", Some("MR"), Some("Sag")),
+            parse_series_name_with_orientation("T2_TSE_AX", Some("MR"), Some(AnatomicalPlane::Sagittal)),
             "T2 Axial"
         );
     }
@@ -555,9 +531,11 @@ mod tests {
     }
 
     #[test]
-    fn test_short_to_full_orientation() {
-        assert_eq!(short_to_full_orientation("Ax"), "Axial");
-        assert_eq!(short_to_full_orientation("Cor"), "Coronal");
-        assert_eq!(short_to_full_orientation("Sag"), "Sagittal");
+    fn test_anatomical_plane_display() {
+        assert_eq!(AnatomicalPlane::Axial.full_name(), "Axial");
+        assert_eq!(AnatomicalPlane::Coronal.full_name(), "Coronal");
+        assert_eq!(AnatomicalPlane::Sagittal.full_name(), "Sagittal");
+        assert_eq!(AnatomicalPlane::Axial.abbrev(), "Ax");
+        assert_eq!(AnatomicalPlane::from_abbrev("Cor"), Some(AnatomicalPlane::Coronal));
     }
 }

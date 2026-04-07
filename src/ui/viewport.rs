@@ -1,5 +1,4 @@
 //! Viewport widget for displaying DICOM images
-#![allow(dead_code)]
 
 use crate::dicom::{DicomImage, ImagePlane, ReferenceLine, SyncInfo, CT_PRESETS};
 use crate::fusion::FusionState;
@@ -7,6 +6,7 @@ use crate::gpu::{DicomPaintCallback, FusionPaintCallback, FusionUniforms, Window
 use crate::ui::SeriesDragPayload;
 use egui::{Color32, ColorImage, Pos2, Rect, Sense, TextureHandle, TextureOptions, Vec2};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 
 /// Minimum interval between texture updates during windowing (ms) - CPU fallback only
@@ -79,8 +79,8 @@ pub struct ViewTransform {
 pub struct Viewport {
     /// Viewport ID (also used as GPU texture slot)
     id: usize,
-    /// Current image
-    image: Option<DicomImage>,
+    /// Current image (Arc to avoid cloning pixel data)
+    image: Option<Arc<DicomImage>>,
     /// Cached texture for display (CPU fallback)
     texture: Option<TextureHandle>,
     /// Texture pending destruction (deferred to avoid use-after-free)
@@ -109,6 +109,8 @@ pub struct Viewport {
     rescale_intercept: f32,
     /// Pixel representation (0 = unsigned, 1 = signed)
     pixel_representation: u16,
+    /// Whether to hide PHI (patient name, ID, etc.) from overlay
+    pub phi_hidden: bool,
 }
 
 impl Default for Viewport {
@@ -151,16 +153,18 @@ impl Viewport {
             rescale_slope: 1.0,
             rescale_intercept: 0.0,
             pixel_representation: 0,
+            phi_hidden: false,
         }
     }
 
     /// Get the viewport ID
+    #[allow(dead_code)]
     pub fn id(&self) -> usize {
         self.id
     }
 
     /// Set the image to display (resets zoom and pan - use for new series)
-    pub fn set_image(&mut self, image: DicomImage) {
+    pub fn set_image(&mut self, image: Arc<DicomImage>) {
         // Clear old texture first to avoid GPU texture-in-use issues
         self.texture = None;
         self.windowing.window_center = image.window_center;
@@ -175,7 +179,7 @@ impl Viewport {
     }
 
     /// Set the image while preserving current zoom, pan, and windowing (use when scrolling through series)
-    pub fn set_image_keep_view(&mut self, image: DicomImage) {
+    pub fn set_image_keep_view(&mut self, image: Arc<DicomImage>) {
         // Clear old texture first to avoid GPU texture-in-use issues
         self.texture = None;
         // Preserve window center/width - don't reset to image defaults
@@ -362,6 +366,7 @@ impl Viewport {
     }
 
     /// Get pixel spacing if available
+    #[allow(dead_code)]
     pub fn pixel_spacing(&self) -> Option<(f64, f64)> {
         self.image.as_ref().and_then(|img| img.pixel_spacing)
     }
@@ -376,10 +381,11 @@ impl Viewport {
 
     /// Get reference to current image
     pub fn image(&self) -> Option<&crate::dicom::DicomImage> {
-        self.image.as_ref()
+        self.image.as_deref()
     }
 
     /// Get current zoom level
+    #[allow(dead_code)]
     pub fn zoom(&self) -> f32 {
         self.view.zoom
     }
@@ -399,6 +405,7 @@ impl Viewport {
     }
 
     /// Check if GPU rendering is enabled
+    #[allow(dead_code)]
     pub fn is_gpu_enabled(&self) -> bool {
         self.use_gpu
     }
@@ -468,6 +475,7 @@ impl Viewport {
 
     /// Show the viewport UI
     /// Returns series info if a series was dropped on this viewport
+    #[allow(dead_code)] // standalone show without reference lines
     pub fn show(&mut self, ui: &mut egui::Ui, mode: InteractionMode) -> Option<DroppedSeries> {
         // Clear texture graveyard - safe now that previous frame is complete
         self.texture_graveyard = None;
@@ -787,55 +795,57 @@ impl Viewport {
             egui::Align2::LEFT_TOP,
         );
 
-        // === TOP RIGHT: Patient/Study Info ===
-        let mut right_lines = Vec::new();
-        if let Some(name) = &image.patient_name {
-            right_lines.push(name.replace('^', " "));
-        }
-        // ID, sex, age on same line
-        let mut id_line = String::new();
-        if let Some(id) = &image.patient_id {
-            id_line.push_str(id);
-        }
-        if let Some(sex) = &image.patient_sex {
+        // === TOP RIGHT: Patient/Study Info (hidden when PHI mode active) ===
+        if !self.phi_hidden {
+            let mut right_lines = Vec::new();
+            if let Some(name) = &image.patient_name {
+                right_lines.push(name.replace('^', " "));
+            }
+            // ID, sex, age on same line
+            let mut id_line = String::new();
+            if let Some(id) = &image.patient_id {
+                id_line.push_str(id);
+            }
+            if let Some(sex) = &image.patient_sex {
+                if !id_line.is_empty() {
+                    id_line.push_str(", ");
+                }
+                id_line.push_str(sex);
+            }
+            if let Some(age) = &image.patient_age {
+                if !id_line.is_empty() {
+                    id_line.push_str(", ");
+                }
+                // Parse age like "045Y" to "45y"
+                let age_clean = age
+                    .trim_start_matches('0')
+                    .replace('Y', "y")
+                    .replace('M', "m")
+                    .replace('D', "d");
+                id_line.push_str(&age_clean);
+            }
             if !id_line.is_empty() {
-                id_line.push_str(", ");
+                right_lines.push(id_line);
             }
-            id_line.push_str(sex);
-        }
-        if let Some(age) = &image.patient_age {
-            if !id_line.is_empty() {
-                id_line.push_str(", ");
+            if let Some(desc) = &image.study_description {
+                right_lines.push(desc.clone());
             }
-            // Parse age like "045Y" to "45y"
-            let age_clean = age
-                .trim_start_matches('0')
-                .replace('Y', "y")
-                .replace('M', "m")
-                .replace('D', "d");
-            id_line.push_str(&age_clean);
-        }
-        if !id_line.is_empty() {
-            right_lines.push(id_line);
-        }
-        if let Some(desc) = &image.study_description {
-            right_lines.push(desc.clone());
-        }
-        if let Some(date) = &image.study_date {
-            // Format YYYYMMDD to YYYY-MM-DD
-            if date.len() >= 8 {
-                right_lines.push(format!("{}-{}-{}", &date[0..4], &date[4..6], &date[6..8]));
+            if let Some(date) = &image.study_date {
+                // Format YYYYMMDD to YYYY-MM-DD
+                if date.len() >= 8 {
+                    right_lines.push(format!("{}-{}-{}", &date[0..4], &date[4..6], &date[6..8]));
+                }
             }
-        }
-        if !right_lines.is_empty() {
-            let right_text = right_lines.join("\n");
-            self.draw_text_with_bg(
-                painter,
-                rect.right_top() + Vec2::new(-10.0, 10.0),
-                &right_text,
-                &font,
-                egui::Align2::RIGHT_TOP,
-            );
+            if !right_lines.is_empty() {
+                let right_text = right_lines.join("\n");
+                self.draw_text_with_bg(
+                    painter,
+                    rect.right_top() + Vec2::new(-10.0, 10.0),
+                    &right_text,
+                    &font,
+                    egui::Align2::RIGHT_TOP,
+                );
+            }
         }
 
         // === BOTTOM RIGHT: Technical Info (modality-specific) ===
@@ -974,6 +984,7 @@ impl Viewport {
     }
 
     /// Show the viewport with reference lines
+    #[allow(dead_code)] // called via viewport manager
     pub fn show_with_reference_lines(
         &mut self,
         ui: &mut egui::Ui,
@@ -1065,7 +1076,9 @@ impl Viewport {
         let fusion_active = fusion.map(|f: &FusionState| f.is_active()).unwrap_or(false);
         if fusion_active && self.use_gpu && self.image.is_some() {
             // GPU fusion rendering path (two textures blended)
-            self.render_fusion(ui, rect, fusion.unwrap());
+            if let Some(fusion) = fusion {
+                self.render_fusion(ui, rect, fusion);
+            }
         } else if self.use_gpu && self.image.is_some() {
             // GPU rendering path (single texture)
             self.render_gpu(ui, rect);

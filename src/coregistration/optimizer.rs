@@ -2,12 +2,12 @@
 //!
 //! Derivative-free optimization suitable for image registration where
 //! gradients are expensive or noisy.
-#![allow(dead_code)]
 
 use super::transform::{RigidTransform, TransformBounds};
 
 /// Optimization result
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // coregistration module API
 pub struct OptimizationResult {
     /// Final transform
     pub transform: RigidTransform,
@@ -223,6 +223,7 @@ impl PowellOptimizer {
 
 /// Multi-resolution optimization schedule
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // coregistration module API
 pub struct PyramidSchedule {
     /// Number of iterations per level (coarse to fine)
     pub iterations: Vec<usize>,
@@ -258,6 +259,7 @@ impl PyramidSchedule {
 
     /// Balanced schedule for good quality with reasonable speed (5-15 seconds)
     /// 3 levels with more iterations for reliable convergence
+    #[allow(dead_code)] // coregistration module API
     pub fn balanced() -> Self {
         Self {
             // 3 levels: 32³ → 64³ → 128³
@@ -269,6 +271,7 @@ impl PyramidSchedule {
 
     /// High quality schedule for best alignment (15-30 seconds)
     /// 4 levels with many iterations for precise sub-voxel alignment
+    #[allow(dead_code)] // coregistration module API
     pub fn quality() -> Self {
         Self {
             // 4 levels: 32³ → 64³ → 128³ → 192³
@@ -279,6 +282,7 @@ impl PyramidSchedule {
     }
 
     /// Get optimizer settings for a pyramid level (0 = coarsest, higher = finer)
+    #[allow(dead_code)] // coregistration module API
     pub fn for_level(&self, level: usize) -> (usize, f64, f64) {
         let idx = level.min(self.iterations.len() - 1);
         (
@@ -289,12 +293,14 @@ impl PyramidSchedule {
     }
 
     /// Number of levels
+    #[allow(dead_code)] // coregistration module API
     pub fn num_levels(&self) -> usize {
         self.iterations.len()
     }
 
     /// Get resolution for a pyramid level (coarsest first)
     /// Returns the target cube size for downsampling
+    #[allow(dead_code)] // coregistration module API
     pub fn resolution_for_level(&self, level: usize) -> usize {
         // Standard resolutions: 32, 64, 128, 192
         match level {

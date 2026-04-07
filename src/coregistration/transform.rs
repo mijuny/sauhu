@@ -1,7 +1,6 @@
 //! Rigid transformation representation and matrix math
 //!
 //! Supports 6 DOF (rotation + translation) and 7 DOF (+ uniform scale)
-#![allow(dead_code)]
 
 use std::f64::consts::PI;
 
@@ -13,6 +12,7 @@ pub struct Vec3 {
     pub z: f64,
 }
 
+#[allow(dead_code)] // coregistration math primitives
 impl Vec3 {
     pub fn new(x: f64, y: f64, z: f64) -> Self {
         Self { x, y, z }
@@ -81,6 +81,7 @@ impl Default for Mat4 {
     }
 }
 
+#[allow(dead_code)] // coregistration math primitives
 impl Mat4 {
     pub fn identity() -> Self {
         Self {
@@ -293,6 +294,7 @@ impl Default for RigidTransform {
     }
 }
 
+#[allow(dead_code)] // coregistration math primitives
 impl RigidTransform {
     pub fn identity() -> Self {
         Self {
@@ -426,6 +428,7 @@ impl RigidTransform {
 }
 
 /// Extract Euler angles (XYZ order) from rotation matrix
+#[allow(dead_code)] // coregistration math primitives
 fn extract_euler_xyz(m: &Mat4, scale: f64) -> (f64, f64, f64) {
     let s = if scale > 1e-10 { scale } else { 1.0 };
 

@@ -1,7 +1,6 @@
 //! Registration pipeline - orchestrates the full coregistration process
 //!
 //! Handles preprocessing, multi-resolution optimization, and result generation.
-#![allow(dead_code)]
 
 use super::metrics::MetricType;
 use super::optimizer::{OptimizationResult, PowellOptimizer, PyramidSchedule};
@@ -12,8 +11,19 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+// HU windowing ranges for CT coregistration preprocessing
+#[allow(dead_code)] // coregistration preprocessing constants
+const CT_BRAIN_HU_MIN: f64 = -500.0; // Bone window: center=500, width=2000
+#[allow(dead_code)]
+const CT_BRAIN_HU_MAX: f64 = 1500.0;
+#[allow(dead_code)]
+const CT_BODY_HU_MIN: f64 = -160.0; // Soft tissue window: center=40, width=400
+#[allow(dead_code)]
+const CT_BODY_HU_MAX: f64 = 240.0;
+
 /// Registration configuration
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // coregistration module API
 pub struct RegistrationConfig {
     /// Modality of target image
     pub target_modality: Modality,
@@ -44,6 +54,7 @@ impl Default for RegistrationConfig {
 
 impl RegistrationConfig {
     /// Create config for brain CT-CT registration
+    #[allow(dead_code)] // coregistration module API
     pub fn brain_ct() -> Self {
         Self {
             target_modality: Modality::CT,
@@ -56,6 +67,7 @@ impl RegistrationConfig {
     }
 
     /// Create config for brain MRI-MRI registration
+    #[allow(dead_code)] // coregistration module API
     pub fn brain_mri() -> Self {
         Self {
             target_modality: Modality::Mri,
@@ -68,6 +80,7 @@ impl RegistrationConfig {
     }
 
     /// Create config for body CT-CT registration
+    #[allow(dead_code)] // coregistration module API
     pub fn body_ct() -> Self {
         Self {
             target_modality: Modality::CT,
@@ -80,6 +93,7 @@ impl RegistrationConfig {
     }
 
     /// Create config for cross-modality (CT-MRI)
+    #[allow(dead_code)] // coregistration module API
     pub fn cross_modality() -> Self {
         Self {
             target_modality: Modality::CT,
@@ -133,6 +147,7 @@ impl Modality {
 
 /// Anatomy type (affects preprocessing)
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)] // coregistration module API
 pub enum Anatomy {
     Brain,
     Body,
@@ -193,6 +208,7 @@ impl VolumeGeometry {
     /// Voxel (0,0,0) maps to physical (0,0,0)
     /// Voxel center is at (i+0.5)*spacing
     #[inline]
+    #[allow(dead_code)] // coregistration module API
     pub fn voxel_to_physical(&self, voxel: (f64, f64, f64)) -> (f64, f64, f64) {
         (
             voxel.0 * self.spacing.0,
@@ -203,6 +219,7 @@ impl VolumeGeometry {
 
     /// Convert physical (mm) coordinates to voxel coordinates
     #[inline]
+    #[allow(dead_code)] // coregistration module API
     pub fn physical_to_voxel(&self, physical: (f64, f64, f64)) -> (f64, f64, f64) {
         (
             physical.0 / self.spacing.0,
@@ -546,6 +563,7 @@ fn rotation_matrix_to_euler_xyz(r: &[[f64; 3]; 3]) -> (f64, f64, f64) {
 
 /// Registration progress info
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // coregistration module API
 pub struct RegistrationProgress {
     /// Current level (0 = finest)
     pub level: usize,
@@ -561,6 +579,7 @@ pub struct RegistrationProgress {
 
 /// Registration result
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // coregistration module API
 pub enum RegistrationResult {
     Success {
         /// Final rigid transform
@@ -582,6 +601,7 @@ pub enum RegistrationResult {
 }
 
 /// Registration pipeline
+#[allow(dead_code)] // coregistration module API
 pub struct RegistrationPipeline {
     /// Configuration
     config: RegistrationConfig,
@@ -591,6 +611,7 @@ pub struct RegistrationPipeline {
     progress: Arc<AtomicU32>,
 }
 
+#[allow(dead_code)] // coregistration module API
 impl RegistrationPipeline {
     pub fn new(config: RegistrationConfig) -> Self {
         Self {
@@ -733,22 +754,18 @@ impl RegistrationPipeline {
 
         match (modality, self.config.anatomy) {
             (Modality::CT, Anatomy::Brain) => {
-                // Bone window: center=500, width=2000 -> HU range [-500, 1500]
-                let min_hu = -500.0;
-                let max_hu = 1500.0;
                 for &v in data {
                     let hu = v as f64 * volume.rescale_slope + volume.rescale_intercept;
-                    let normalized = ((hu - min_hu) / (max_hu - min_hu)).clamp(0.0, 1.0);
+                    let normalized =
+                        ((hu - CT_BRAIN_HU_MIN) / (CT_BRAIN_HU_MAX - CT_BRAIN_HU_MIN)).clamp(0.0, 1.0);
                     result.push(normalized as f32);
                 }
             }
             (Modality::CT, Anatomy::Body) => {
-                // Soft tissue window: center=40, width=400 -> HU range [-160, 240]
-                let min_hu = -160.0;
-                let max_hu = 240.0;
                 for &v in data {
                     let hu = v as f64 * volume.rescale_slope + volume.rescale_intercept;
-                    let normalized = ((hu - min_hu) / (max_hu - min_hu)).clamp(0.0, 1.0);
+                    let normalized =
+                        ((hu - CT_BODY_HU_MIN) / (CT_BODY_HU_MAX - CT_BODY_HU_MIN)).clamp(0.0, 1.0);
                     result.push(normalized as f32);
                 }
             }
@@ -791,111 +808,139 @@ pub fn apply_transform_to_volume(
 ) -> Volume {
     use super::transform::Vec3 as TransformVec3;
 
-    let (width, height, depth) = volume.dimensions;
-    let (col_sp, row_sp, slice_sp) = volume.spacing;
+    let (src_width, src_height, src_depth) = volume.dimensions;
+    let (src_col_sp, src_row_sp, src_slice_sp) = volume.spacing;
+
+    // When target is available, resample onto the target's grid so that
+    // the output volume has identical geometry (dimensions, spacing, origin,
+    // directions). This makes ImagePlane::intersect() produce correct
+    // reference lines without any special-case hacks.
+    let (out_width, out_height, out_depth, out_col_sp, out_row_sp, out_slice_sp) =
+        if let Some(target) = target_volume {
+            let (tw, th, td) = target.dimensions;
+            let (tc, tr, ts) = target.spacing;
+            (tw, th, td, tc, tr, ts)
+        } else {
+            (src_width, src_height, src_depth, src_col_sp, src_row_sp, src_slice_sp)
+        };
 
     // Get the inverse transform matrix (maps output coords to source coords)
     let inv = transform.to_inverse_matrix();
 
     // Create output data buffer
-    let mut output_data = vec![0u16; width * height * depth];
+    let mut output_data = vec![0u16; out_width * out_height * out_depth];
 
     // For each output voxel, compute its position in source coordinates
-    for z in 0..depth {
-        for y in 0..height {
-            for x in 0..width {
-                // Output voxel center in volume index coordinates
-                let out_x = x as f64 + 0.5;
-                let out_y = y as f64 + 0.5;
-                let out_z = z as f64 + 0.5;
-
-                // Convert to physical coordinates (mm)
-                let phys_x = out_x * col_sp;
-                let phys_y = out_y * row_sp;
-                let phys_z = out_z * slice_sp;
+    for z in 0..out_depth {
+        for y in 0..out_height {
+            for x in 0..out_width {
+                // Output voxel center in physical coordinates (mm) using output spacing
+                let phys_x = (x as f64 + 0.5) * out_col_sp;
+                let phys_y = (y as f64 + 0.5) * out_row_sp;
+                let phys_z = (z as f64 + 0.5) * out_slice_sp;
 
                 // Apply inverse transform to get source physical coordinates
                 let src_phys = inv.transform_point(TransformVec3::new(phys_x, phys_y, phys_z));
 
-                // Convert back to source index coordinates
-                let src_x = src_phys.x / col_sp;
-                let src_y = src_phys.y / row_sp;
-                let src_z = src_phys.z / slice_sp;
+                // Convert to source index coordinates using source spacing
+                let src_x = src_phys.x / src_col_sp;
+                let src_y = src_phys.y / src_row_sp;
+                let src_z = src_phys.z / src_slice_sp;
 
                 // Trilinear interpolation from source
-                let value =
-                    trilinear_sample_u16(&volume.data, (width, height, depth), src_x, src_y, src_z);
+                let value = trilinear_sample_u16(
+                    &volume.data,
+                    (src_width, src_height, src_depth),
+                    src_x,
+                    src_y,
+                    src_z,
+                );
 
-                let out_idx = x + y * width + z * width * height;
+                let out_idx = x + y * out_width + z * out_width * out_height;
                 output_data[out_idx] = value;
             }
         }
     }
 
-    // Create new volume with transformed data (avoids cloning the large data Vec)
-    let mut new_volume = Volume {
-        data: output_data,
-        dimensions: volume.dimensions,
-        spacing: volume.spacing,
-        origin: volume.origin,
-        row_direction: volume.row_direction,
-        col_direction: volume.col_direction,
-        slice_direction: volume.slice_direction,
-        rescale_slope: volume.rescale_slope,
-        rescale_intercept: volume.rescale_intercept,
-        modality: volume.modality.clone(),
-        series_description: Some(
-            volume
-                .series_description
-                .as_ref()
-                .map(|s| format!("{} (Coregistered)", s))
-                .unwrap_or_else(|| "(Coregistered)".to_string()),
-        ),
-        acquisition_orientation: volume.acquisition_orientation,
-        frame_of_reference_uid: volume.frame_of_reference_uid.clone(),
-        study_instance_uid: volume.study_instance_uid.clone(),
-        default_window_center: volume.default_window_center,
-        default_window_width: volume.default_window_width,
-        patient_name: volume.patient_name.clone(),
-        patient_id: volume.patient_id.clone(),
-        patient_age: volume.patient_age.clone(),
-        patient_sex: volume.patient_sex.clone(),
-        study_date: volume.study_date.clone(),
-        study_description: volume.study_description.clone(),
-        original_slice_positions: volume.original_slice_positions.clone(),
-        pixel_representation: volume.pixel_representation,
-        is_coregistered: true,
-    };
-
-    // CRITICAL: Copy target volume's geometry for sync to work correctly
-    // After coregistration, the voxel data is aligned with the target,
-    // so the geometry (origin, directions) must also match the target.
-    // This is similar to the gantry tilt issue - slice locations are computed
-    // from the volume's origin and directions, so they must match the target.
+    // Build the output volume. When target is available, adopt its full geometry
+    // so that both volumes are dimensionally identical.
     if let Some(target) = target_volume {
-        // Copy geometry that affects slice location computation
-        new_volume.origin = target.origin;
-        new_volume.row_direction = target.row_direction;
-        new_volume.col_direction = target.col_direction;
-        new_volume.slice_direction = target.slice_direction;
-        new_volume.acquisition_orientation = target.acquisition_orientation;
-
-        // Copy frame_of_reference and study UIDs for sync matching
-        new_volume.frame_of_reference_uid = target.frame_of_reference_uid.clone();
-        new_volume.study_instance_uid = target.study_instance_uid.clone();
-
-        // Copy original slice positions if available (for sync with original series)
-        if !target.original_slice_positions.is_empty() {
-            new_volume.original_slice_positions = target.original_slice_positions.clone();
-        }
-
-        println!(
-            "Copied target geometry: origin=({:.1}, {:.1}, {:.1}), FOR={:?}",
-            target.origin.x, target.origin.y, target.origin.z, target.frame_of_reference_uid
+        tracing::info!(
+            "Coregistration: resampled source ({}x{}x{}, sp={:.2},{:.2},{:.2}) onto target grid ({}x{}x{}, sp={:.2},{:.2},{:.2})",
+            src_width, src_height, src_depth, src_col_sp, src_row_sp, src_slice_sp,
+            out_width, out_height, out_depth, out_col_sp, out_row_sp, out_slice_sp,
         );
-    }
 
-    new_volume
+        Volume {
+            data: output_data,
+            dimensions: target.dimensions,
+            spacing: target.spacing,
+            origin: target.origin,
+            row_direction: target.row_direction,
+            col_direction: target.col_direction,
+            slice_direction: target.slice_direction,
+            rescale_slope: volume.rescale_slope,
+            rescale_intercept: volume.rescale_intercept,
+            modality: volume.modality.clone(),
+            series_description: Some(
+                volume
+                    .series_description
+                    .as_ref()
+                    .map(|s| format!("{} (Coregistered)", s))
+                    .unwrap_or_else(|| "(Coregistered)".to_string()),
+            ),
+            acquisition_orientation: target.acquisition_orientation,
+            frame_of_reference_uid: target.frame_of_reference_uid.clone(),
+            study_instance_uid: target.study_instance_uid.clone(),
+            default_window_center: volume.default_window_center,
+            default_window_width: volume.default_window_width,
+            patient_name: volume.patient_name.clone(),
+            patient_id: volume.patient_id.clone(),
+            patient_age: volume.patient_age.clone(),
+            patient_sex: volume.patient_sex.clone(),
+            study_date: volume.study_date.clone(),
+            study_description: volume.study_description.clone(),
+            original_slice_positions: if !target.original_slice_positions.is_empty() {
+                target.original_slice_positions.clone()
+            } else {
+                volume.original_slice_positions.clone()
+            },
+            pixel_representation: volume.pixel_representation,
+        }
+    } else {
+        Volume {
+            data: output_data,
+            dimensions: volume.dimensions,
+            spacing: volume.spacing,
+            origin: volume.origin,
+            row_direction: volume.row_direction,
+            col_direction: volume.col_direction,
+            slice_direction: volume.slice_direction,
+            rescale_slope: volume.rescale_slope,
+            rescale_intercept: volume.rescale_intercept,
+            modality: volume.modality.clone(),
+            series_description: Some(
+                volume
+                    .series_description
+                    .as_ref()
+                    .map(|s| format!("{} (Coregistered)", s))
+                    .unwrap_or_else(|| "(Coregistered)".to_string()),
+            ),
+            acquisition_orientation: volume.acquisition_orientation,
+            frame_of_reference_uid: volume.frame_of_reference_uid.clone(),
+            study_instance_uid: volume.study_instance_uid.clone(),
+            default_window_center: volume.default_window_center,
+            default_window_width: volume.default_window_width,
+            patient_name: volume.patient_name.clone(),
+            patient_id: volume.patient_id.clone(),
+            patient_age: volume.patient_age.clone(),
+            patient_sex: volume.patient_sex.clone(),
+            study_date: volume.study_date.clone(),
+            study_description: volume.study_description.clone(),
+            original_slice_positions: volume.original_slice_positions.clone(),
+            pixel_representation: volume.pixel_representation,
+        }
+    }
 }
 
 /// Trilinear interpolation sample from u16 volume data
@@ -943,6 +988,7 @@ fn trilinear_sample_u16(data: &[u16], dims: (usize, usize, usize), x: f64, y: f6
 }
 
 /// Build resolution pyramid (CPU version)
+#[allow(dead_code)] // coregistration pipeline internals
 fn build_pyramid(data: &[f32], dims: (usize, usize, usize), levels: usize) -> Vec<Vec<f32>> {
     let mut pyramid = Vec::with_capacity(levels);
 
@@ -968,6 +1014,7 @@ fn build_pyramid(data: &[f32], dims: (usize, usize, usize), levels: usize) -> Ve
 }
 
 /// Downsample volume by 2x in each dimension (parallel version)
+#[allow(dead_code)] // coregistration pipeline internals
 fn downsample_parallel(
     data: &[f32],
     dims: (usize, usize, usize),
@@ -1013,6 +1060,7 @@ fn downsample_parallel(
 }
 
 /// Get dimensions at pyramid level
+#[allow(dead_code)] // coregistration pipeline internals
 fn pyramid_dimensions(base: (usize, usize, usize), level: usize) -> (usize, usize, usize) {
     let divisor = 1 << level; // 2^level
     (
@@ -1023,6 +1071,7 @@ fn pyramid_dimensions(base: (usize, usize, usize), level: usize) -> (usize, usiz
 }
 
 /// Resample volume with transformation (parallel CPU version)
+#[allow(dead_code)] // coregistration pipeline internals
 fn resample_volume_parallel(
     source: &[f32],
     dims: (usize, usize, usize),
@@ -1056,6 +1105,7 @@ fn resample_volume_parallel(
 }
 
 /// Trilinear interpolation
+#[allow(dead_code)] // coregistration pipeline internals
 fn trilinear_sample(data: &[f32], dims: (usize, usize, usize), pos: super::transform::Vec3) -> f32 {
     let (w, h, d) = dims;
 
