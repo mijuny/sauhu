@@ -1,0 +1,16 @@
+[package]
+name = "sauhu-common"
+version = "0.1.0"
+edition = "2021"
+description = "Shared DICOM networking types and PACS modules for Sauhu"
+
+[dependencies]
+# DICOM
+dicom = "0.9"
+dicom-dictionary-std = "0.9"
+dicom-ul = "0.9"
+
+# Utilities
+anyhow = "1.0"
+tracing = "0.1"
+serde = { version = "1.0", features = ["derive"] }

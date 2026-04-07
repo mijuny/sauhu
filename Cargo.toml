@@ -1,0 +1,85 @@
+[workspace]
+members = ["sauhu-common"]
+
+[package]
+name = "sauhu"
+version = "0.1.0"
+edition = "2021"
+authors = ["Mikko <mikko@liekki.xyz>"]
+description = "Lightning-fast DICOM viewer for Linux"
+license = "PolyForm-Noncommercial-1.0.0"
+default-run = "sauhu"
+
+[dependencies]
+# Workspace
+sauhu-common = { path = "sauhu-common" }
+
+# UI
+eframe = { version = "0.29", default-features = false, features = [
+    "default_fonts",
+    "wgpu",
+    "wayland",
+    "x11",
+] }
+egui = "0.29"
+egui_extras = { version = "0.29", features = ["image"] }
+
+# GPU (use eframe's wgpu re-export for compatibility)
+bytemuck = { version = "1.14", features = ["derive"] }
+wgpu = "22"
+pollster = "0.4"
+
+# DICOM
+dicom = "0.9"
+dicom-pixeldata = { version = "0.9", features = ["image", "native", "openjp2", "charls"] }
+dicom-dictionary-std = "0.9"
+dicom-ul = "0.9"  # DICOM Upper Layer protocol (C-FIND, C-MOVE, C-STORE)
+
+# Database
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# Async
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "fs"] }
+
+# Image processing
+image = "0.25"
+
+# System
+libc = "0.2"
+
+# Utilities
+uuid = { version = "1", features = ["v4"] }
+rand = "0.8"
+anyhow = "1.0"
+rayon = "1.10"
+thiserror = "2.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+directories = "5.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+walkdir = "2.5"
+rfd = "0.15"  # Native file dialogs
+arboard = { version = "3.6.1", features = ["wayland-data-control"] }
+
+[[bin]]
+name = "sauhu"
+path = "src/main.rs"
+
+[[bin]]
+name = "dicom_test"
+path = "src/bin/dicom_test.rs"
+
+[[bin]]
+name = "pacs_test"
+path = "src/bin/pacs_test.rs"
+
+[[bin]]
+name = "mpr_sandbox"
+path = "src/bin/mpr_sandbox.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

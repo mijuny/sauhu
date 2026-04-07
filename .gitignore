@@ -1,0 +1,52 @@
+/target
+Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local data
+*.log
+*.db
+/data/
+
+# DICOM files (may contain PHI)
+*.dcm
+*.DCM
+
+# Secrets and certificates
+*.env
+.env*
+*.pem
+*.key
+*.crt
+
+# Local config (may contain hospital-specific PACS endpoints)
+config.toml
+!Cargo.toml
+
+# Test data (not in repo)
+/test-data/
+.claude/
+.codex
+CLAUDE.md
+
+# Internal dev notes (kept locally)
+PHASE_*.md
+SESSION_NOTES.md
+SHORTCUTS.md
+codex_*.md
+docs/claude-viewer.md
+docs/coreg-refline-bug.md
+docs/coregistration-plan.md
+docs/coregistration-improvement-plan.md
+docs/fusion-plan.md
+docs/fusion-verification-checklist.md
+docs/hanging-protocols.md
