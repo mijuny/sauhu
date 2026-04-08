@@ -6,6 +6,7 @@
 // WIP: IPC protocol is defined but client integration is pending
 #![allow(dead_code)]
 
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -38,6 +39,8 @@ pub fn socket_path() -> PathBuf {
         PathBuf::from(runtime_dir).join("sauhu.sock")
     } else {
         // Fallback to /tmp
+        // SAFETY: getuid() is always safe - it's a read-only syscall with no arguments,
+        // no failure mode, and no undefined behavior. It simply returns the real user ID.
         PathBuf::from("/tmp").join(format!("sauhu-{}.sock", unsafe { libc::getuid() }))
     }
 }
@@ -158,30 +161,27 @@ impl IpcClient {
     }
 
     /// Send a command to Sauhu
-    pub fn send_command(&self, command: &IpcCommand) -> Result<IpcResponse, String> {
+    pub fn send_command(&self, command: &IpcCommand) -> Result<IpcResponse> {
         let mut stream = UnixStream::connect(&self.socket_path)
-            .map_err(|e| format!("Cannot connect to Sauhu: {}", e))?;
+            .context("Cannot connect to Sauhu")?;
 
-        let command_json = serde_json::to_string(command)
-            .map_err(|e| format!("Failed to serialize command: {}", e))?;
+        let command_json =
+            serde_json::to_string(command).context("Failed to serialize command")?;
 
-        writeln!(stream, "{}", command_json)
-            .map_err(|e| format!("Failed to send command: {}", e))?;
-        stream
-            .flush()
-            .map_err(|e| format!("Failed to flush: {}", e))?;
+        writeln!(stream, "{}", command_json).context("Failed to send command")?;
+        stream.flush().context("Failed to flush")?;
 
         let mut reader = BufReader::new(stream);
         let mut response_line = String::new();
         reader
             .read_line(&mut response_line)
-            .map_err(|e| format!("Failed to read response: {}", e))?;
+            .context("Failed to read response")?;
 
-        serde_json::from_str(&response_line).map_err(|e| format!("Failed to parse response: {}", e))
+        serde_json::from_str(&response_line).context("Failed to parse response")
     }
 
     /// Open a study by accession number
-    pub fn open_study(&self, accession: &str) -> Result<IpcResponse, String> {
+    pub fn open_study(&self, accession: &str) -> Result<IpcResponse> {
         self.send_command(&IpcCommand::OpenStudy {
             accession: accession.to_string(),
         })

@@ -1,5 +1,55 @@
 # Changelog
 
+## 2026-04-08 -- Roadmap Tier 1-2: ImagePixels struct, fusion removal, cleanup
+
+### Changed
+
+- **ImagePixels struct**: Bundled 5 pixel-data arguments of
+  `compute_circle_roi_stats()` into an `ImagePixels` struct, eliminating the
+  `#[allow(clippy::too_many_arguments)]` annotation.
+
+- **MPR pipeline error logging**: `VolumeFailed` and `SeriesFailed` channel
+  sends now log `tracing::warn` if the receiver is closed, instead of silently
+  discarding the error.
+
+- **Guarded unwrap**: Replaced bare `.unwrap()` on `image_plane` access in
+  `Volume::from_series()` with `.expect()` documenting the invariant.
+
+- **Coregistration dead code**: Removed unused `body_ct()`,
+  `cross_modality()`, and `higher_is_better()`. Kept all internally-used API.
+
+- **MPR file split**: Extracted 984 lines of tests from `src/dicom/mpr.rs`
+  into `src/dicom/mpr/tests.rs`. Production code reduced from 2,578 to 1,594
+  lines.
+
+- **Database write logging**: `upsert_study_for_retrieval` failure in
+  `quick_fetch.rs` now logs a warning instead of silently discarding the error.
+
+### Removed
+
+- **Fusion module**: Removed `src/fusion/`, `src/gpu/shaders/fusion.wgsl`, and
+  all fusion references across renderer, viewport, app, and coregistration code.
+  Fusion rendering was never completed. Net removal of ~1,400 lines.
+
+## 2026-04-08 -- Roadmap Tier 3: error types, GPU resilience, unsafe docs
+
+### Changed
+
+- **Consistent error types**: Converted IPC client from `Result<T, String>` to
+  `anyhow::Result` with `.context()` for error chains. Removed unused `thiserror`
+  dependency from Cargo.toml.
+
+- **GPU runtime resilience**: `DicomTexture::from_dicom_image()` now returns
+  `Option<Self>`, catching panics from wgpu texture creation and upload (OOM,
+  device lost). `upload_to_cache()` and `upload_and_cache_texture()` return
+  `bool` success status. When a GPU texture upload fails mid-session, the
+  affected viewport falls back to CPU rendering automatically instead of
+  crashing.
+
+### Added
+
+- SAFETY comment on the `unsafe { libc::getuid() }` block in `src/ipc.rs`.
+
 ## 2026-04-08 -- Fix cross-series reference lines on MPR views
 
 ### Fixed

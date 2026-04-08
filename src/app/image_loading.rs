@@ -361,13 +361,19 @@ impl SauhuApp {
                                     &path,
                                 ) {
                                     // Not in GPU cache, upload and cache
-                                    resources.upload_and_cache_texture(
+                                    if !resources.upload_and_cache_texture(
                                         &render_state.device,
                                         &render_state.queue,
                                         viewport_id,
                                         path,
                                         &image,
-                                    );
+                                    ) {
+                                        // GPU upload failed - fall back to CPU for this viewport
+                                        tracing::warn!("GPU texture upload failed for viewport {}, falling back to CPU rendering", viewport_id);
+                                        if let Some(slot) = self.viewport_manager.get_slot_mut(viewport_id) {
+                                            slot.viewport.set_use_gpu(false);
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -477,13 +483,18 @@ impl SauhuApp {
                             .callback_resources
                             .get_mut::<DicomRenderResources>()
                         {
-                            resources.upload_and_cache_texture(
+                            if !resources.upload_and_cache_texture(
                                 &render_state.device,
                                 &render_state.queue,
                                 viewport_id,
                                 path,
                                 &image,
-                            );
+                            ) {
+                                tracing::warn!("GPU texture upload failed for viewport {}, falling back to CPU rendering", viewport_id);
+                                if let Some(slot) = self.viewport_manager.get_slot_mut(viewport_id) {
+                                    slot.viewport.set_use_gpu(false);
+                                }
+                            }
                         }
                     }
                 }
