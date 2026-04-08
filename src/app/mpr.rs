@@ -1,6 +1,5 @@
 
 use crate::dicom::{AnatomicalPlane, DicomImage, MprSeries, Volume};
-use crate::gpu::DicomRenderResources;
 use crate::ui::ViewportId;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
@@ -119,12 +118,14 @@ impl SauhuApp {
                                 });
                             }
                             None => {
-                                let _ = result_tx.send(MprResult::VolumeFailed {
+                                if result_tx.send(MprResult::VolumeFailed {
                                     viewport_id,
                                     error: "Could not build volume (images may not be parallel)"
                                         .to_string(),
                                     generation,
-                                });
+                                }).is_err() {
+                                    tracing::warn!("MPR result channel closed while reporting volume failure");
+                                }
                             }
                         }
                     }
@@ -155,11 +156,13 @@ impl SauhuApp {
                                 });
                             }
                             None => {
-                                let _ = result_tx.send(MprResult::SeriesFailed {
+                                if result_tx.send(MprResult::SeriesFailed {
                                     viewport_id,
                                     error: "Failed to generate MPR series".to_string(),
                                     generation,
-                                });
+                                }).is_err() {
+                                    tracing::warn!("MPR result channel closed while reporting series failure");
+                                }
                             }
                         }
                     }
@@ -503,153 +506,4 @@ impl SauhuApp {
         });
     }
 
-    /// Update fusion bind groups for viewports with active fusion.
-    /// This binds both the base texture (from this viewport's series) and
-    /// the overlay texture (from the source viewport's series) into the fusion pipeline.
-    pub(super) fn update_fusion_bind_groups(&mut self, frame: &eframe::Frame) {
-        if !self.gpu_available {
-            return;
-        }
-        let render_state = match frame.wgpu_render_state() {
-            Some(rs) => rs,
-            None => return,
-        };
-
-        let count = self.viewport_manager.layout().viewport_count();
-        for vp_id in 0..count {
-            // Extract fusion state info without holding mutable borrow
-            let fusion_info = {
-                let slot = match self.viewport_manager.get_slot(vp_id) {
-                    Some(s) => s,
-                    None => continue,
-                };
-                if !slot.fusion_state.is_active() {
-                    continue;
-                }
-                let overlay_vp = match slot.fusion_state.overlay_source_viewport {
-                    Some(v) => v,
-                    None => continue,
-                };
-                // Get current file paths for base and overlay
-                let base_path = if slot.mpr_state.is_active() {
-                    slot.mpr_state.get_series_path().cloned()
-                } else {
-                    slot.current_file().cloned()
-                };
-                (overlay_vp, base_path)
-            };
-
-            let (overlay_vp, base_path) = fusion_info;
-
-            let overlay_path = {
-                let overlay_slot = match self.viewport_manager.get_slot(overlay_vp) {
-                    Some(s) => s,
-                    None => continue,
-                };
-                if overlay_slot.mpr_state.is_active() {
-                    overlay_slot.mpr_state.get_series_path().cloned()
-                } else {
-                    overlay_slot.current_file().cloned()
-                }
-            };
-
-            if let (Some(bp), Some(op)) = (base_path, overlay_path) {
-                // Ensure both textures are in GPU cache.
-                // MPR images are normally CPU-rendered, so we upload them on demand for fusion.
-                {
-                    let mut renderer = render_state.renderer.write();
-                    if let Some(resources) = renderer
-                        .callback_resources
-                        .get_mut::<DicomRenderResources>()
-                    {
-                        // Upload base texture if missing
-                        if !resources.is_texture_cached(&bp) {
-                            if let Some(slot) = self.viewport_manager.get_slot(vp_id) {
-                                if let Some(img) = slot.viewport.image() {
-                                    resources.upload_to_cache(
-                                        &render_state.device,
-                                        &render_state.queue,
-                                        bp.clone(),
-                                        img,
-                                    );
-                                }
-                            }
-                        }
-                        // Upload overlay texture if missing
-                        if !resources.is_texture_cached(&op) {
-                            if let Some(overlay_slot) =
-                                self.viewport_manager.get_slot(overlay_vp)
-                            {
-                                if let Some(img) = overlay_slot.viewport.image() {
-                                    resources.upload_to_cache(
-                                        &render_state.device,
-                                        &render_state.queue,
-                                        op.clone(),
-                                        img,
-                                    );
-                                }
-                            }
-                        }
-                        // Also bind the base texture to the viewport's slot (for non-fusion WL display)
-                        resources.bind_cached_texture(&render_state.device, vp_id, &bp);
-                    }
-                }
-
-                // Now create the fusion bind group
-                {
-                    let mut renderer = render_state.renderer.write();
-                    if let Some(resources) = renderer
-                        .callback_resources
-                        .get_mut::<DicomRenderResources>()
-                    {
-                        resources.create_fusion_bind_group(
-                            &render_state.device,
-                            vp_id,
-                            &bp,
-                            &op,
-                        );
-                    }
-                }
-            }
-
-            // Extract overlay windowing info before mutable borrow
-            let overlay_info = self
-                .viewport_manager
-                .get_slot(overlay_vp)
-                .map(|overlay_slot| {
-                    let (owc, oww) = overlay_slot.viewport.window_level();
-                    let rescale = overlay_slot.viewport.image().map(|img| {
-                        (
-                            img.rescale_slope as f32,
-                            img.rescale_intercept as f32,
-                            img.pixel_representation as u32,
-                        )
-                    });
-                    (owc, oww, rescale)
-                });
-
-            // Update fusion windowing parameters from current viewport state
-            if let Some(slot) = self.viewport_manager.get_slot_mut(vp_id) {
-                let (wc, ww) = slot.viewport.window_level();
-                slot.fusion_state.set_base_window(wc as f32, ww as f32);
-                // Also set base rescale from image
-                if let Some(img) = slot.viewport.image() {
-                    slot.fusion_state.set_base_rescale(
-                        img.rescale_slope as f32,
-                        img.rescale_intercept as f32,
-                        img.pixel_representation as u32,
-                    );
-                }
-
-                // Apply overlay windowing
-                if let Some((owc, oww, rescale)) = overlay_info {
-                    slot.fusion_state.set_overlay_window(owc as f32, oww as f32);
-                    if let Some((slope, intercept, pixel_rep)) = rescale {
-                        slot.fusion_state
-                            .set_overlay_rescale(slope, intercept, pixel_rep);
-                    }
-                }
-            }
-        }
-    }
 }

@@ -34,7 +34,8 @@ use sauhu::coregistration::{
 };
 use sauhu::dicom::{
     compute_circle_roi_stats, compute_distance_mm, compute_point_in_plane, compute_reference_line,
-    group_files_by_series, AnatomicalPlane, DicomFile, DicomImage, ImagePlane, MprSeries, Point2D,
+    group_files_by_series, AnatomicalPlane, DicomFile, DicomImage, ImagePixels, ImagePlane,
+    MprSeries, Point2D,
     Vec3, Volume,
 };
 use sauhu::gpu::{GpuCoregistration, VolumeUpload};
@@ -963,16 +964,14 @@ fn cmd_roi(args: &[String]) -> Result<()> {
         radius
     );
 
-    if let Some(stats) = compute_circle_roi_stats(
-        &img.pixels,
-        img.width,
-        img.height,
-        cx,
-        cy,
-        radius,
-        img.rescale_slope,
-        img.rescale_intercept,
-    ) {
+    let image_pixels = ImagePixels {
+        data: &img.pixels,
+        width: img.width,
+        height: img.height,
+        rescale_slope: img.rescale_slope,
+        rescale_intercept: img.rescale_intercept,
+    };
+    if let Some(stats) = compute_circle_roi_stats(&image_pixels, cx, cy, radius) {
         println!("\nROI Statistics:");
         println!("  Mean:   {:.1}", stats.mean);
         println!("  SD:     {:.1}", stats.std_dev);

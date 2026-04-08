@@ -31,30 +31,6 @@ pub struct WindowingUniforms {
     pub _padding: u32,
 }
 
-/// Uniform buffer data for fusion shader
-#[repr(C)]
-#[derive(Debug, Copy, Clone, Pod, Zeroable)]
-pub struct FusionUniforms {
-    pub opacity: f32,
-    pub blend_mode: u32,
-    pub base_wc: f32,
-    pub base_ww: f32,
-    pub base_slope: f32,
-    pub base_intercept: f32,
-    pub base_pixel_rep: u32,
-    pub overlay_wc: f32,
-    pub overlay_ww: f32,
-    pub overlay_slope: f32,
-    pub overlay_intercept: f32,
-    pub overlay_pixel_rep: u32,
-    pub scale: [f32; 2],
-    pub offset: [f32; 2],
-    pub colormap_index: u32,
-    pub checker_size: f32,
-    pub threshold: f32,
-    pub _padding: f32,
-}
-
 /// Maximum number of viewport texture slots
 pub const MAX_TEXTURE_SLOTS: usize = 8;
 
@@ -86,15 +62,6 @@ pub struct DicomRenderResources {
     texture_cache_lru: VecDeque<PathBuf>,
     /// Which path is currently bound to each slot
     slot_paths: Vec<Option<PathBuf>>,
-    /// Fusion render pipeline (for blending two textures)
-    pub fusion_pipeline: wgpu::RenderPipeline,
-    /// Fusion bind group layout
-    pub fusion_bind_group_layout: wgpu::BindGroupLayout,
-    /// Fusion uniform buffers (one per viewport slot)
-    pub fusion_uniform_buffers: Vec<wgpu::Buffer>,
-    /// Fusion bind groups: (base_texture, overlay_texture, uniforms)
-    /// Created dynamically when fusion is active
-    pub fusion_bind_groups: Vec<Option<wgpu::BindGroup>>,
 }
 
 impl DicomRenderResources {
@@ -214,129 +181,6 @@ impl DicomRenderResources {
             slot_paths.push(None);
         }
 
-        // === Fusion pipeline ===
-        let fusion_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Fusion Shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/fusion.wgsl").into()),
-        });
-
-        let fusion_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("Fusion Bind Group Layout"),
-                entries: &[
-                    // Fusion uniforms
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: NonZeroU64::new(
-                                std::mem::size_of::<FusionUniforms>() as u64,
-                            ),
-                        },
-                        count: None,
-                    },
-                    // Base DICOM texture
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Uint,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    // Overlay DICOM texture
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Uint,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                ],
-            });
-
-        let fusion_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("Fusion Pipeline Layout"),
-                bind_group_layouts: &[&fusion_bind_group_layout],
-                push_constant_ranges: &[],
-            });
-
-        let fusion_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Fusion Pipeline"),
-            layout: Some(&fusion_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &fusion_shader,
-                entry_point: "vs_main",
-                buffers: &[],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &fusion_shader,
-                entry_point: "fs_main",
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: target_format,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            multiview: None,
-            cache: None,
-        });
-
-        let default_fusion_uniforms = FusionUniforms {
-            opacity: 0.5,
-            blend_mode: 0,
-            base_wc: 40.0,
-            base_ww: 400.0,
-            base_slope: 1.0,
-            base_intercept: 0.0,
-            base_pixel_rep: 0,
-            overlay_wc: 40.0,
-            overlay_ww: 400.0,
-            overlay_slope: 1.0,
-            overlay_intercept: 0.0,
-            overlay_pixel_rep: 0,
-            scale: [1.0, 1.0],
-            offset: [0.0, 0.0],
-            colormap_index: 0,
-            checker_size: 32.0,
-            threshold: 0.0,
-            _padding: 0.0,
-        };
-
-        let mut fusion_uniform_buffers = Vec::with_capacity(MAX_TEXTURE_SLOTS);
-        let mut fusion_bind_groups: Vec<Option<wgpu::BindGroup>> =
-            Vec::with_capacity(MAX_TEXTURE_SLOTS);
-        for slot in 0..MAX_TEXTURE_SLOTS {
-            let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some(&format!("Fusion Uniforms Slot {}", slot)),
-                contents: bytemuck::cast_slice(&[default_fusion_uniforms]),
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            });
-            fusion_uniform_buffers.push(buffer);
-            fusion_bind_groups.push(None);
-        }
-
         Self {
             pipeline,
             bind_group_layout,
@@ -347,10 +191,6 @@ impl DicomRenderResources {
             texture_cache: HashMap::new(),
             texture_cache_lru: VecDeque::new(),
             slot_paths,
-            fusion_pipeline,
-            fusion_bind_group_layout,
-            fusion_uniform_buffers,
-            fusion_bind_groups,
         }
     }
 
@@ -419,11 +259,6 @@ impl DicomRenderResources {
         tracing::debug!("GPU texture cache cleared");
     }
 
-    /// Check if texture for path is already cached in GPU
-    pub fn is_texture_cached(&self, path: &PathBuf) -> bool {
-        self.texture_cache.contains_key(path)
-    }
-
     /// Bind cached texture to slot (returns true if found in cache)
     /// This is the fast path - no GPU upload needed
     pub fn bind_cached_texture(
@@ -477,18 +312,19 @@ impl DicomRenderResources {
         false
     }
 
-    /// Upload texture to cache only (without binding to slot)
-    /// Use this for bulk uploads like MPR series
+    /// Upload texture to cache only (without binding to slot).
+    /// Use this for bulk uploads like MPR series.
+    /// Returns false if the GPU texture upload failed (out of VRAM).
     pub fn upload_to_cache(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         path: PathBuf,
         image: &crate::dicom::DicomImage,
-    ) {
+    ) -> bool {
         // Skip if already cached
         if self.texture_cache.contains_key(&path) {
-            return;
+            return true;
         }
 
         // Evict oldest if cache is full
@@ -502,8 +338,11 @@ impl DicomRenderResources {
             }
         }
 
-        // Upload texture
-        let texture = DicomTexture::from_dicom_image(device, queue, image);
+        // Upload texture - may fail if GPU is out of VRAM
+        let texture = match DicomTexture::from_dicom_image(device, queue, image) {
+            Some(t) => t,
+            None => return false,
+        };
 
         // Add to cache (don't bind to any slot)
         self.texture_cache
@@ -511,9 +350,11 @@ impl DicomRenderResources {
         self.texture_cache_lru.push_back(path);
 
         tracing::trace!("GPU cache: uploaded texture to cache");
+        true
     }
 
-    /// Upload and cache texture for path, then bind to slot
+    /// Upload and cache texture for path, then bind to slot.
+    /// Returns false if the GPU texture upload failed (out of VRAM).
     pub fn upload_and_cache_texture(
         &mut self,
         device: &wgpu::Device,
@@ -521,16 +362,19 @@ impl DicomRenderResources {
         slot: usize,
         path: PathBuf,
         image: &crate::dicom::DicomImage,
-    ) {
+    ) -> bool {
         if slot >= MAX_TEXTURE_SLOTS {
-            return;
+            return false;
         }
 
         // Upload to cache first
-        self.upload_to_cache(device, queue, path.clone(), image);
+        if !self.upload_to_cache(device, queue, path.clone(), image) {
+            return false;
+        }
 
         // Now bind from cache
         self.bind_cached_texture(device, slot, &path);
+        true
     }
 
     /// Update uniforms for a specific slot (window/level and transform)
@@ -576,109 +420,12 @@ impl DicomRenderResources {
         }
     }
 
-    /// Create a fusion bind group for a viewport slot.
-    /// Combines the base texture (from `base_slot`) and overlay texture (from `overlay_slot`)
-    /// with the fusion uniform buffer for `target_slot`.
-    pub fn create_fusion_bind_group(
-        &mut self,
-        device: &wgpu::Device,
-        target_slot: usize,
-        base_path: &PathBuf,
-        overlay_path: &PathBuf,
-    ) -> bool {
-        if target_slot >= MAX_TEXTURE_SLOTS {
-            return false;
-        }
-
-        // Get texture views from cache
-        let base_view = self
-            .texture_cache
-            .get(base_path)
-            .map(|ct| &ct.texture.view);
-        let overlay_view = self
-            .texture_cache
-            .get(overlay_path)
-            .map(|ct| &ct.texture.view);
-
-        match (base_view, overlay_view) {
-            (Some(base_v), Some(overlay_v)) => {
-                let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some(&format!("Fusion Bind Group Slot {}", target_slot)),
-                    layout: &self.fusion_bind_group_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: self.fusion_uniform_buffers[target_slot]
-                                .as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::TextureView(base_v),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: wgpu::BindingResource::TextureView(overlay_v),
-                        },
-                    ],
-                });
-                self.fusion_bind_groups[target_slot] = Some(bind_group);
-                true
-            }
-            _ => {
-                tracing::warn!(
-                    "Fusion: cannot create bind group for slot {} - missing textures",
-                    target_slot
-                );
-                false
-            }
-        }
-    }
-
-    /// Update fusion uniforms for a specific slot
-    pub fn update_fusion_uniforms(
-        &self,
-        queue: &wgpu::Queue,
-        slot: usize,
-        uniforms: FusionUniforms,
-    ) {
-        if slot < MAX_TEXTURE_SLOTS {
-            queue.write_buffer(
-                &self.fusion_uniform_buffers[slot],
-                0,
-                bytemuck::cast_slice(&[uniforms]),
-            );
-        }
-    }
-
-    /// Get fusion bind group for a specific slot
-    pub fn get_fusion_bind_group(&self, slot: usize) -> Option<&wgpu::BindGroup> {
-        if slot < MAX_TEXTURE_SLOTS {
-            self.fusion_bind_groups[slot].as_ref()
-        } else {
-            None
-        }
-    }
-
-    /// Clear fusion bind group for a slot
-    #[allow(dead_code)] // GPU rendering API
-    pub fn clear_fusion_bind_group(&mut self, slot: usize) {
-        if slot < MAX_TEXTURE_SLOTS {
-            self.fusion_bind_groups[slot] = None;
-        }
-    }
 }
 
 /// Paint callback for custom DICOM rendering
 pub struct DicomPaintCallback {
     pub uniforms: WindowingUniforms,
     /// Which texture slot to render (0-7)
-    pub slot: usize,
-}
-
-/// Paint callback for fusion rendering (two textures blended)
-pub struct FusionPaintCallback {
-    pub uniforms: FusionUniforms,
-    /// Which texture slot's fusion bind group to use (0-7)
     pub slot: usize,
 }
 
@@ -709,37 +456,6 @@ impl egui_wgpu::CallbackTrait for DicomPaintCallback {
                 render_pass.set_pipeline(&resources.pipeline);
                 render_pass.set_bind_group(0, bind_group, &[]);
                 // Draw fullscreen quad (6 vertices for 2 triangles, generated in vertex shader)
-                render_pass.draw(0..6, 0..1);
-            }
-        }
-    }
-}
-
-impl egui_wgpu::CallbackTrait for FusionPaintCallback {
-    fn prepare(
-        &self,
-        _device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        _screen_descriptor: &egui_wgpu::ScreenDescriptor,
-        _encoder: &mut wgpu::CommandEncoder,
-        callback_resources: &mut CallbackResources,
-    ) -> Vec<wgpu::CommandBuffer> {
-        if let Some(resources) = callback_resources.get::<DicomRenderResources>() {
-            resources.update_fusion_uniforms(queue, self.slot, self.uniforms);
-        }
-        Vec::new()
-    }
-
-    fn paint(
-        &self,
-        _info: egui::PaintCallbackInfo,
-        render_pass: &mut wgpu::RenderPass<'static>,
-        callback_resources: &CallbackResources,
-    ) {
-        if let Some(resources) = callback_resources.get::<DicomRenderResources>() {
-            if let Some(bind_group) = resources.get_fusion_bind_group(self.slot) {
-                render_pass.set_pipeline(&resources.fusion_pipeline);
-                render_pass.set_bind_group(0, bind_group, &[]);
                 render_pass.draw(0..6, 0..1);
             }
         }

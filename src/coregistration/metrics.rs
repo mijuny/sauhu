@@ -280,11 +280,6 @@ impl MetricType {
         }
     }
 
-    /// Is higher better for this metric?
-    #[allow(dead_code)] // coregistration metrics API
-    pub fn higher_is_better(&self) -> bool {
-        true // All metrics normalized so higher = better
-    }
 }
 
 #[cfg(test)]

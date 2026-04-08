@@ -427,7 +427,9 @@ impl SauhuApp {
                         modality: study_info.modality.clone(),
                         accession_number: study_info.accession_number.clone(),
                     };
-                    let _ = upsert_study_for_retrieval(&self.db.conn(), &retrieval_info, &path);
+                    if let Err(e) = upsert_study_for_retrieval(&self.db.conn(), &retrieval_info, &path) {
+                        tracing::warn!("Failed to save retrieval info to database: {}", e);
+                    }
 
                     self.status = format!("Retrieved: {}", accession);
                     self.quick_fetch.state = QuickFetchState::Idle;

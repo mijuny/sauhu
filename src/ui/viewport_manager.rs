@@ -5,7 +5,6 @@
 use crate::dicom::{
     AnatomicalPlane, DicomImage, MprState, PatientAxis, Point2D, ReferenceLine, SyncInfo,
 };
-use crate::fusion::FusionState;
 use crate::ui::{DroppedSeries, InteractionMode, Viewport};
 use egui::{Color32, Ui};
 use std::path::PathBuf;
@@ -87,8 +86,6 @@ pub struct ViewportSlot {
     pub mpr_state: MprState,
     /// True when a new series was just loaded — first image should trigger smart fit
     pub new_series: bool,
-    /// Fusion state (for blending with another viewport)
-    pub fusion_state: FusionState,
 }
 
 impl ViewportSlot {
@@ -103,7 +100,6 @@ impl ViewportSlot {
             texture_slot: id,
             mpr_state: MprState::new(),
             new_series: false,
-            fusion_state: FusionState::new(),
         }
     }
 
@@ -1060,14 +1056,9 @@ impl ViewportManager {
             );
         }
 
-        let fusion = if slot.fusion_state.is_active() {
-            Some(&slot.fusion_state)
-        } else {
-            None
-        };
         let dropped =
             slot.viewport
-                .show_with_reference_lines_and_fusion(ui, ref_lines, mode, fusion);
+                .show_with_reference_lines(ui, ref_lines, mode);
 
         // Track hover and click
         // Don't consider viewport hovered if mouse is over any egui window (database, sidebar, etc.)
@@ -1123,13 +1114,6 @@ impl ViewportManager {
         if self.reference_lines_enabled {
             flags.push("REF".to_string());
         }
-        // Show fusion state in status bar
-        if slot.fusion_state.is_active() {
-            let fusion_text = slot.fusion_state.status_text();
-            if !fusion_text.is_empty() {
-                flags.push(fusion_text);
-            }
-        }
         let flags_str = if flags.is_empty() {
             String::new()
         } else {
@@ -1160,7 +1144,6 @@ impl ViewportManager {
             slot.sync_info = None;
             slot.new_series = false;
             slot.clear_mpr();
-            slot.fusion_state = FusionState::new();
         }
     }
 

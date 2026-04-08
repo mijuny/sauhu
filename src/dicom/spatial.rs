@@ -138,18 +138,22 @@ pub struct ROIStats {
     pub pixel_count: usize,
 }
 
+/// Image pixel data with rescale parameters for ROI statistics
+pub struct ImagePixels<'a> {
+    pub data: &'a [u16],
+    pub width: u32,
+    pub height: u32,
+    pub rescale_slope: f64,
+    pub rescale_intercept: f64,
+}
+
 /// Compute statistics for a circular ROI
 /// Takes pixel values and their positions, center, and radius in pixels
-#[allow(clippy::too_many_arguments)]
 pub fn compute_circle_roi_stats(
-    pixels: &[u16],
-    width: u32,
-    height: u32,
+    image: &ImagePixels,
     center_x: f64,
     center_y: f64,
     radius: f64,
-    rescale_slope: f64,
-    rescale_intercept: f64,
 ) -> Option<ROIStats> {
     if radius <= 0.0 {
         return None;
@@ -159,19 +163,19 @@ pub fn compute_circle_roi_stats(
     let r2 = radius * radius;
 
     let x_min = ((center_x - radius).floor() as i32).max(0) as u32;
-    let x_max = ((center_x + radius).ceil() as i32).min(width as i32 - 1) as u32;
+    let x_max = ((center_x + radius).ceil() as i32).min(image.width as i32 - 1) as u32;
     let y_min = ((center_y - radius).floor() as i32).max(0) as u32;
-    let y_max = ((center_y + radius).ceil() as i32).min(height as i32 - 1) as u32;
+    let y_max = ((center_y + radius).ceil() as i32).min(image.height as i32 - 1) as u32;
 
     for y in y_min..=y_max {
         for x in x_min..=x_max {
             let dx = x as f64 - center_x;
             let dy = y as f64 - center_y;
             if dx * dx + dy * dy <= r2 {
-                let idx = (y * width + x) as usize;
-                if idx < pixels.len() {
-                    let raw = pixels[idx] as f64;
-                    let value = raw * rescale_slope + rescale_intercept;
+                let idx = (y * image.width + x) as usize;
+                if idx < image.data.len() {
+                    let raw = image.data[idx] as f64;
+                    let value = raw * image.rescale_slope + image.rescale_intercept;
                     values.push(value);
                 }
             }

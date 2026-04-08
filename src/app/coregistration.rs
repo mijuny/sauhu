@@ -96,9 +96,6 @@ impl SauhuApp {
                             }
                         }
 
-                        // NOTE: Fusion activation disabled — coregistration works
-                        // without it. Re-enable when fusion rendering is stable.
-                        // See branch kaptah/fusion-alpha-blend for fusion code.
                     }
 
                     self.coregistration.reset();

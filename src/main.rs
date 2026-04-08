@@ -8,7 +8,6 @@ mod config;
 mod coregistration;
 mod db;
 mod dicom;
-mod fusion;
 mod gpu;
 mod hanging_protocol;
 mod ipc;

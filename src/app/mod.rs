@@ -1459,9 +1459,6 @@ impl eframe::App for SauhuApp {
         // Check for coregistration results
         self.check_coregistration_results();
 
-        // Update fusion bind groups (must happen after image loading, before rendering)
-        self.update_fusion_bind_groups(frame);
-
         // Check for quick fetch results
         self.check_quick_fetch_results();
 
@@ -1517,18 +1514,9 @@ impl eframe::App for SauhuApp {
                     self.database_window.request_load_studies();
                 }
             }
-            // B: cycle blend mode if fusion active, otherwise toggle patient sidebar
+            // B: toggle patient sidebar
             if i.key_pressed(egui::Key::B) && !i.modifiers.ctrl {
-                let slot = self.viewport_manager.get_active_mut();
-                if slot.fusion_state.is_active() {
-                    slot.fusion_state.cycle_blend_mode();
-                    self.status = format!(
-                        "Blend: {}",
-                        slot.fusion_state.blend_mode.display_name()
-                    );
-                } else {
-                    self.patient_sidebar.visible = !self.patient_sidebar.visible;
-                }
+                self.patient_sidebar.visible = !self.patient_sidebar.visible;
             }
             // F1 to toggle toolbar
             if i.key_pressed(egui::Key::F1) {
@@ -1570,40 +1558,6 @@ impl eframe::App for SauhuApp {
                 self.status = "Coregistration cancelled".to_string();
                 self.viewport_manager.clear_coregistration_state();
             }
-            // F: Toggle fusion on/off on active viewport
-            if i.key_pressed(egui::Key::F) && !i.modifiers.ctrl && !i.modifiers.alt {
-                let slot = &mut self.viewport_manager.get_active_mut();
-                if slot.fusion_state.overlay_source_viewport.is_some() {
-                    slot.fusion_state.toggle();
-                    if slot.fusion_state.enabled {
-                        self.status = format!(
-                            "Fusion ON — {:.0}%",
-                            slot.fusion_state.opacity * 100.0
-                        );
-                    } else {
-                        self.status = "Fusion OFF".to_string();
-                    }
-                }
-            }
-            // M: Cycle colormap in fusion mode (Hot → Rainbow → Cool-Warm → Grayscale)
-            if i.key_pressed(egui::Key::M) && !i.modifiers.ctrl {
-                let slot = self.viewport_manager.get_active_mut();
-                if slot.fusion_state.is_active() {
-                    slot.fusion_state.cycle_colormap();
-                    self.status = format!(
-                        "Colormap: {}",
-                        slot.fusion_state.colormap.display_name()
-                    );
-                }
-            }
-            // T: Reset threshold in fusion mode
-            if i.key_pressed(egui::Key::T) && !i.modifiers.ctrl && !i.modifiers.shift {
-                let slot = self.viewport_manager.get_active_mut();
-                if slot.fusion_state.is_active() {
-                    slot.fusion_state.reset_threshold();
-                    self.status = "Threshold reset to 0%".to_string();
-                }
-            }
         });
 
         // Handle V+number for layout shortcuts (configurable)
@@ -1642,29 +1596,7 @@ impl eframe::App for SauhuApp {
         ctx.input(|i| {
             let scroll = i.raw_scroll_delta.y;
             if scroll != 0.0 && !pointer_over_ui {
-                if i.modifiers.ctrl && i.modifiers.shift {
-                    // Ctrl+Shift+scroll: adjust fusion threshold (5% steps)
-                    let slot = self.viewport_manager.get_active_mut();
-                    if slot.fusion_state.is_active() {
-                        let delta = if scroll > 0.0 { 0.05 } else { -0.05 };
-                        slot.fusion_state.adjust_threshold(delta);
-                        self.status = format!(
-                            "Threshold: {:.0}%",
-                            slot.fusion_state.threshold * 100.0
-                        );
-                    }
-                } else if i.modifiers.ctrl {
-                    // Ctrl+scroll: adjust fusion opacity if fusion is active
-                    let slot = self.viewport_manager.get_active_mut();
-                    if slot.fusion_state.is_active() {
-                        let delta = if scroll > 0.0 { 0.05 } else { -0.05 };
-                        slot.fusion_state.adjust_opacity(delta);
-                        self.status = format!(
-                            "Fusion opacity: {:.0}%",
-                            slot.fusion_state.opacity * 100.0
-                        );
-                    }
-                } else {
+                if !i.modifiers.ctrl {
                     // Normal scroll: navigate images
                     let mouse_pos = i.pointer.hover_pos();
                     let mouse_over_viewport = mouse_pos

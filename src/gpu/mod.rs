@@ -12,7 +12,4 @@ mod renderer;
 mod texture;
 
 pub use coregistration::{GpuCoregistration, VolumeUpload};
-pub use renderer::{
-    DicomPaintCallback, DicomRenderResources, FusionPaintCallback, FusionUniforms,
-    WindowingUniforms,
-};
+pub use renderer::{DicomPaintCallback, DicomRenderResources, WindowingUniforms};

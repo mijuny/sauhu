@@ -1,8 +1,7 @@
 //! Viewport widget for displaying DICOM images
 
 use crate::dicom::{DicomImage, ImagePlane, ReferenceLine, SyncInfo, CT_PRESETS};
-use crate::fusion::FusionState;
-use crate::gpu::{DicomPaintCallback, FusionPaintCallback, FusionUniforms, WindowingUniforms};
+use crate::gpu::{DicomPaintCallback, WindowingUniforms};
 use crate::ui::SeriesDragPayload;
 use egui::{Color32, ColorImage, Pos2, Rect, Sense, TextureHandle, TextureOptions, Vec2};
 use std::path::PathBuf;
@@ -593,40 +592,6 @@ impl Viewport {
         ui.painter().add(wgpu_callback);
     }
 
-    /// Render using fusion GPU pipeline (two textures blended)
-    pub fn render_fusion(&self, ui: &mut egui::Ui, rect: Rect, fusion: &FusionState) {
-        let (scale, offset) = self.calculate_gpu_transform(rect.size());
-
-        let uniforms = FusionUniforms {
-            opacity: fusion.opacity,
-            blend_mode: fusion.blend_mode.shader_index(),
-            base_wc: fusion.base_window_center,
-            base_ww: fusion.base_window_width,
-            base_slope: fusion.base_rescale_slope,
-            base_intercept: fusion.base_rescale_intercept,
-            base_pixel_rep: fusion.base_pixel_representation,
-            overlay_wc: fusion.overlay_window_center,
-            overlay_ww: fusion.overlay_window_width,
-            overlay_slope: fusion.overlay_rescale_slope,
-            overlay_intercept: fusion.overlay_rescale_intercept,
-            overlay_pixel_rep: fusion.overlay_pixel_representation,
-            scale,
-            offset,
-            colormap_index: fusion.colormap_index,
-            checker_size: fusion.checker_size,
-            threshold: fusion.threshold,
-            _padding: 0.0,
-        };
-
-        let callback = FusionPaintCallback {
-            uniforms,
-            slot: self.id,
-        };
-
-        let wgpu_callback = eframe::egui_wgpu::Callback::new_paint_callback(rect, callback);
-        ui.painter().add(wgpu_callback);
-    }
-
     /// Render using CPU texture (fallback)
     fn render_cpu(&self, painter: &egui::Painter, rect: Rect) {
         if let Some(ref texture) = self.texture {
@@ -971,36 +936,12 @@ impl Viewport {
         self.image.as_ref().and_then(|img| img.image_plane.as_ref())
     }
 
-    /// Show the viewport with reference lines (with optional fusion state)
-    pub fn show_with_reference_lines_and_fusion(
-        &mut self,
-        ui: &mut egui::Ui,
-        ref_lines: &[ReferenceLine],
-        mode: InteractionMode,
-        fusion: Option<&FusionState>,
-    ) -> Option<DroppedSeries> {
-        // Delegate to main implementation with fusion
-        self.show_with_reference_lines_impl(ui, ref_lines, mode, fusion)
-    }
-
     /// Show the viewport with reference lines
-    #[allow(dead_code)] // called via viewport manager
     pub fn show_with_reference_lines(
         &mut self,
         ui: &mut egui::Ui,
         ref_lines: &[ReferenceLine],
         mode: InteractionMode,
-    ) -> Option<DroppedSeries> {
-        self.show_with_reference_lines_impl(ui, ref_lines, mode, None)
-    }
-
-    /// Internal implementation for showing viewport with optional fusion
-    fn show_with_reference_lines_impl(
-        &mut self,
-        ui: &mut egui::Ui,
-        ref_lines: &[ReferenceLine],
-        mode: InteractionMode,
-        fusion: Option<&FusionState>,
     ) -> Option<DroppedSeries> {
         let available_size = ui.available_size();
 
@@ -1072,14 +1013,8 @@ impl Viewport {
         // Draw background
         painter.rect_filled(rect, 0.0, Color32::BLACK);
 
-        // Render image — fusion mode uses the fusion pipeline if active
-        let fusion_active = fusion.map(|f: &FusionState| f.is_active()).unwrap_or(false);
-        if fusion_active && self.use_gpu && self.image.is_some() {
-            // GPU fusion rendering path (two textures blended)
-            if let Some(fusion) = fusion {
-                self.render_fusion(ui, rect, fusion);
-            }
-        } else if self.use_gpu && self.image.is_some() {
+        // Render image
+        if self.use_gpu && self.image.is_some() {
             // GPU rendering path (single texture)
             self.render_gpu(ui, rect);
         } else {
@@ -1095,21 +1030,6 @@ impl Viewport {
 
         // Handle interactions
         self.handle_input(ui, &response, mode);
-
-        // Show fusion status overlay
-        if let Some(f) = fusion {
-            if f.is_active() {
-                let fusion_text = f.status_text();
-                let font = egui::FontId::monospace(12.0);
-                self.draw_text_with_bg(
-                    &painter,
-                    rect.left_bottom() + egui::Vec2::new(10.0, -10.0),
-                    &fusion_text,
-                    &font,
-                    egui::Align2::LEFT_BOTTOM,
-                );
-            }
-        }
 
         // Show info overlay
         self.show_info_overlay(ui, rect);

@@ -8,7 +8,6 @@ pub mod config;
 pub mod coregistration;
 pub mod db;
 pub mod dicom;
-pub mod fusion;
 pub mod gpu;
 pub mod hanging_protocol;
 pub mod ipc;

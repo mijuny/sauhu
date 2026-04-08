@@ -79,32 +79,6 @@ impl RegistrationConfig {
         }
     }
 
-    /// Create config for body CT-CT registration
-    #[allow(dead_code)] // coregistration module API
-    pub fn body_ct() -> Self {
-        Self {
-            target_modality: Modality::CT,
-            source_modality: Modality::CT,
-            anatomy: Anatomy::Body,
-            optimize_scale: false,
-            metric: MetricType::Ncc,
-            schedule: PyramidSchedule::fast(),
-        }
-    }
-
-    /// Create config for cross-modality (CT-MRI)
-    #[allow(dead_code)] // coregistration module API
-    pub fn cross_modality() -> Self {
-        Self {
-            target_modality: Modality::CT,
-            source_modality: Modality::Mri,
-            anatomy: Anatomy::Brain,
-            optimize_scale: false,
-            metric: MetricType::Nmi, // Mutual information for cross-modality
-            schedule: PyramidSchedule::fast(),
-        }
-    }
-
     /// Detect appropriate config from modality strings
     pub fn detect(target_modality: Option<&str>, source_modality: Option<&str>) -> Self {
         let t_mod = Modality::from_str(target_modality);
@@ -1059,19 +1033,7 @@ fn downsample_parallel(
     result
 }
 
-/// Get dimensions at pyramid level
-#[allow(dead_code)] // coregistration pipeline internals
-fn pyramid_dimensions(base: (usize, usize, usize), level: usize) -> (usize, usize, usize) {
-    let divisor = 1 << level; // 2^level
-    (
-        (base.0 / divisor).max(1),
-        (base.1 / divisor).max(1),
-        (base.2 / divisor).max(1),
-    )
-}
-
 /// Resample volume with transformation (parallel CPU version)
-#[allow(dead_code)] // coregistration pipeline internals
 fn resample_volume_parallel(
     source: &[f32],
     dims: (usize, usize, usize),
@@ -1079,21 +1041,15 @@ fn resample_volume_parallel(
 ) -> Vec<f32> {
     let (w, h, d) = dims;
 
-    // Process slices in parallel
     let result: Vec<f32> = (0..d)
         .into_par_iter()
         .flat_map(|z| {
             let mut slice = vec![0.0f32; w * h];
             for y in 0..h {
                 for x in 0..w {
-                    // Output voxel center
                     let out_pos =
                         super::transform::Vec3::new(x as f64 + 0.5, y as f64 + 0.5, z as f64 + 0.5);
-
-                    // Transform to source coordinates
                     let src_pos = transform.transform_point(out_pos);
-
-                    // Trilinear interpolation
                     slice[x + y * w] = trilinear_sample(source, dims, src_pos);
                 }
             }
@@ -1105,11 +1061,9 @@ fn resample_volume_parallel(
 }
 
 /// Trilinear interpolation
-#[allow(dead_code)] // coregistration pipeline internals
 fn trilinear_sample(data: &[f32], dims: (usize, usize, usize), pos: super::transform::Vec3) -> f32 {
     let (w, h, d) = dims;
 
-    // Handle out of bounds
     if pos.x < 0.0 || pos.y < 0.0 || pos.z < 0.0 {
         return 0.0;
     }
@@ -1129,7 +1083,6 @@ fn trilinear_sample(data: &[f32], dims: (usize, usize, usize), pos: super::trans
     let yf = (pos.y - y0 as f64) as f32;
     let zf = (pos.z - z0 as f64) as f32;
 
-    // Sample 8 corners
     let c000 = data[x0 + y0 * w + z0 * w * h];
     let c100 = data[x1 + y0 * w + z0 * w * h];
     let c010 = data[x0 + y1 * w + z0 * w * h];
@@ -1139,7 +1092,6 @@ fn trilinear_sample(data: &[f32], dims: (usize, usize, usize), pos: super::trans
     let c011 = data[x0 + y1 * w + z1 * w * h];
     let c111 = data[x1 + y1 * w + z1 * w * h];
 
-    // Trilinear interpolation
     let c00 = c000 * (1.0 - xf) + c100 * xf;
     let c10 = c010 * (1.0 - xf) + c110 * xf;
     let c01 = c001 * (1.0 - xf) + c101 * xf;
@@ -1150,3 +1102,15 @@ fn trilinear_sample(data: &[f32], dims: (usize, usize, usize), pos: super::trans
 
     c0 * (1.0 - zf) + c1 * zf
 }
+
+/// Get dimensions at pyramid level
+#[allow(dead_code)] // coregistration pipeline internals
+fn pyramid_dimensions(base: (usize, usize, usize), level: usize) -> (usize, usize, usize) {
+    let divisor = 1 << level; // 2^level
+    (
+        (base.0 / divisor).max(1),
+        (base.1 / divisor).max(1),
+        (base.2 / divisor).max(1),
+    )
+}
+
