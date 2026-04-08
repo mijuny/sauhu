@@ -854,7 +854,14 @@ impl Volume {
                         } else {
                             (0..d).collect()
                         };
-                        for row_z in 0..h {
+                        // Z comes from row dimension: reverse when z_sign > 0
+                        let (_, _, z_sign) = self.get_axis_direction(PatientAxis::Z);
+                        let z_iter: Vec<usize> = if z_sign > 0.0 {
+                            (0..h).rev().collect()
+                        } else {
+                            (0..h).collect()
+                        };
+                        for &row_z in &z_iter {
                             for &slice_x in &x_iter {
                                 let idx = slice_x * w * h + row_z * w + col_idx;
                                 pixels.push(self.data[idx]);
@@ -884,8 +891,14 @@ impl Volume {
                         let out_height = h;
                         let mut pixels = Vec::with_capacity(out_width * out_height);
 
-                        // Z from rows, Y from slices
-                        for row_z in 0..h {
+                        // Z from rows: reverse when z_sign > 0
+                        let (_, _, z_sign) = self.get_axis_direction(PatientAxis::Z);
+                        let z_iter: Vec<usize> = if z_sign > 0.0 {
+                            (0..h).rev().collect()
+                        } else {
+                            (0..h).collect()
+                        };
+                        for &row_z in &z_iter {
                             for slice_y in 0..d {
                                 let idx = slice_y * w * h + row_z * w + col_idx;
                                 pixels.push(self.data[idx]);
@@ -1004,7 +1017,7 @@ impl ReformattedSlice {
     /// - col_direction pointing to the bottom edge
     pub fn compute_image_plane(&self, volume: &Volume, slice_index: usize) -> ImagePlane {
         // Get the volume direction that corresponds to each patient axis
-        let (x_dir, x_spacing, _x_sign) = volume.get_axis_direction(PatientAxis::X);
+        let (x_dir, x_spacing, x_sign) = volume.get_axis_direction(PatientAxis::X);
         let (y_dir, y_spacing, _y_sign) = volume.get_axis_direction(PatientAxis::Y);
         let (z_dir, z_spacing, z_sign) = volume.get_axis_direction(PatientAxis::Z);
 
@@ -1019,6 +1032,10 @@ impl ReformattedSlice {
         //   origin + z_dir * z_extent. col_dir = z_dir.negate() (toward inferior).
         // When z_sign < 0: z decreases toward superior, so origin is already at
         //   the superior end. col_dir = z_dir (which points inferior since z_dir.z < 0).
+        //
+        // The resample also reverses the X axis when x_sign > 0 (for radiological
+        // convention: patient LEFT on screen LEFT). The ImagePlane must match:
+        // when x_sign > 0, position starts at the far X end and row_direction is negated.
         let (row_dir, col_dir, normal, position) = match self.plane {
             AnatomicalPlane::Axial | AnatomicalPlane::Original => {
                 // Axial: slices perpendicular to Z axis
@@ -1027,8 +1044,18 @@ impl ReformattedSlice {
                 // Normal: along Z (superior-inferior)
                 // Position: origin + slice_offset_along_Z
                 let offset = z_dir.scale(slice_index as f64 * z_spacing);
-                let pos = volume.origin.add(&offset);
-                (x_dir, y_dir, z_dir, pos)
+                let mut pos = volume.origin.add(&offset);
+
+                // Account for X-axis reversal in resample
+                let row = if x_sign > 0.0 {
+                    let x_extent = x_dir.scale((self.width as f64 - 1.0) * self.pixel_spacing.1);
+                    pos = pos.add(&x_extent);
+                    x_dir.negate()
+                } else {
+                    x_dir
+                };
+
+                (row, y_dir, z_dir, pos)
             }
             AnatomicalPlane::Coronal => {
                 // Coronal: slices perpendicular to Y axis
@@ -1045,16 +1072,27 @@ impl ReformattedSlice {
                     AcquisitionOrientation::Unknown => d as f64 * volume.spacing.2,
                 };
 
-                if z_sign > 0.0 {
+                let (col, mut pos) = if z_sign > 0.0 {
                     // z increases toward superior: offset to top, col goes down
                     let z_offset = z_dir.scale(z_extent);
-                    let pos = volume.origin.add(&slice_offset).add(&z_offset);
-                    (x_dir, z_dir.negate(), y_dir, pos)
+                    let p = volume.origin.add(&slice_offset).add(&z_offset);
+                    (z_dir.negate(), p)
                 } else {
                     // z decreases toward superior: origin is at top, col = z_dir (goes inferior)
-                    let pos = volume.origin.add(&slice_offset);
-                    (x_dir, z_dir, y_dir, pos)
-                }
+                    let p = volume.origin.add(&slice_offset);
+                    (z_dir, p)
+                };
+
+                // Account for X-axis reversal in resample
+                let row = if x_sign > 0.0 {
+                    let x_extent = x_dir.scale((self.width as f64 - 1.0) * self.pixel_spacing.1);
+                    pos = pos.add(&x_extent);
+                    x_dir.negate()
+                } else {
+                    x_dir
+                };
+
+                (row, col, y_dir, pos)
             }
             AnatomicalPlane::Sagittal => {
                 // Sagittal: slices perpendicular to X axis
@@ -2327,5 +2365,210 @@ mod tests {
         assert!(info.contains("Axial"), "info: {}", info);
         assert!(info.contains("/5"), "info: {}", info);
         assert!(info.contains("mm"), "info: {}", info);
+    }
+
+    // ---------------------------------------------------------------
+    // Reference line geometry: coronal MPR ImagePlane vs pixel data
+    // ---------------------------------------------------------------
+
+    /// Verify that the ImagePlane Z range matches the pixel data Z range
+    /// for a coronal reslice from a sagittal volume (z_sign > 0).
+    #[test]
+    fn test_coronal_image_plane_z_matches_pixel_data_zsign_pos() {
+        let vol = make_sagittal_volume(); // col_dir = (0,0,+1), z_sign > 0
+        let (_, _, z_sign) = vol.get_axis_direction(PatientAxis::Z);
+        assert!(z_sign > 0.0, "Expected z_sign > 0 for this test");
+
+        let slice = vol.resample(AnatomicalPlane::Coronal, 2).unwrap();
+        let plane = slice.compute_image_plane(&vol, 2);
+
+        // ImagePlane: pixel row 0 should be SUPERIOR (highest Z)
+        let top_z = plane.position.z + plane.col_direction.z * 0.0 * slice.pixel_spacing.0;
+        let bot_z = plane.position.z
+            + plane.col_direction.z * (slice.height as f64 - 1.0) * slice.pixel_spacing.0;
+
+        assert!(
+            top_z > bot_z,
+            "ImagePlane row 0 (Z={:.1}) should be more superior than row {} (Z={:.1})",
+            top_z,
+            slice.height - 1,
+            bot_z
+        );
+
+        // Verify pixel data: row 0 should contain voxels from the highest Z
+        // In the sagittal volume: col_dir = (0,0,+1), so row 0 has Z=0 (inferior)
+        // and row h-1 has Z=h-1 (superior).
+        // Pixel values: slice_x*100 + row_z*10 + col_idx, col_idx=2
+        //
+        // After z_sign fix, row 0 of output should come from row h-1 (superior).
+        // The voxel at (any_slice, h-1, 2) has value any_slice*100 + (h-1)*10 + 2
+        let (_w, h, _d) = vol.dimensions;
+        let first_pixel = slice.pixels[0]; // row 0, col 0 of output
+        // With z_sign > 0 and fixed code: z_iter reversed, so row 0 = row_z=h-1
+        // x_iter also reversed (x_sign > 0): col 0 = slice d-1 = 4
+        let expected_superior = (4 * 100 + (h - 1) as u16 * 10 + 2) as u16; // 422
+        assert_eq!(
+            first_pixel, expected_superior,
+            "Pixel row 0 should be superior end (expected value from Z={}, got pixel={})",
+            h - 1,
+            first_pixel
+        );
+    }
+
+    /// Same test but for a sagittal volume with z_sign < 0 (the common case).
+    #[test]
+    fn test_coronal_image_plane_z_matches_pixel_data_zsign_neg() {
+        // Create a sagittal volume with col_direction.z < 0 (typical GE BRAVO)
+        let vol = Volume {
+            col_direction: Vec3::new(0.0, 0.0, -1.0),
+            origin: Vec3::new(0.0, 0.0, 10.0), // Z=10 at row 0 (superior)
+            ..make_sagittal_volume()
+        };
+        let (_, _, z_sign) = vol.get_axis_direction(PatientAxis::Z);
+        assert!(z_sign < 0.0, "Expected z_sign < 0 for this test");
+
+        let slice = vol.resample(AnatomicalPlane::Coronal, 2).unwrap();
+        let plane = slice.compute_image_plane(&vol, 2);
+
+        // ImagePlane: pixel row 0 should be SUPERIOR (highest Z)
+        let top_z = plane.position.z;
+        let bot_z =
+            plane.position.z + plane.col_direction.z * (slice.height as f64) * slice.pixel_spacing.0;
+
+        assert!(
+            top_z > bot_z,
+            "ImagePlane row 0 (Z={:.1}) should be more superior than bottom (Z={:.1})",
+            top_z,
+            bot_z
+        );
+
+        // Verify pixel data: row 0 should be at the highest Z.
+        // With col_dir.z = -1 and origin.z = 10: row 0 is Z=10 (superior), row h-1 is Z=10-(h-1)
+        // z_sign < 0 → z_iter is forward → pixel row 0 = row_z=0 = Z=10 (superior) ✓
+        //
+        // Pixel values: slice_x*100 + row_z*10 + col_idx.
+        // x_sign for this vol: slice_direction still (1,0,0), so x_sign = +1 → x_iter reversed.
+        // Col 0 of output = slice d-1 = 4. row 0 = row_z=0.
+        let first_pixel = slice.pixels[0];
+        let expected = (4 * 100 + 0 * 10 + 2) as u16; // 402
+        assert_eq!(
+            first_pixel, expected,
+            "Pixel row 0 should be from row_z=0 (Z=10, superior), expected {}, got {}",
+            expected, first_pixel
+        );
+
+        // Check that ImagePlane position.z matches the volume origin.z (the superior end)
+        assert!(
+            (plane.position.z - 10.0).abs() < 0.01,
+            "ImagePlane position.z should be 10.0 (origin), got {:.3}",
+            plane.position.z
+        );
+    }
+
+    /// Verify reference line intersection: an axial plane at a known Z should
+    /// produce a horizontal line at the correct pixel row on a coronal MPR.
+    #[test]
+    fn test_coronal_reference_line_position_from_axial() {
+        // Use z_sign < 0 volume (common case)
+        let vol = Volume {
+            col_direction: Vec3::new(0.0, 0.0, -1.0),
+            origin: Vec3::new(0.0, 0.0, 10.0),
+            ..make_sagittal_volume()
+        };
+        let (_w, h, _d) = vol.dimensions; // 4, 3, 5
+
+        // Coronal at slice_index=2
+        let slice = vol.resample(AnatomicalPlane::Coronal, 2).unwrap();
+        let coronal_plane = slice.compute_image_plane(&vol, 2);
+
+        // Create a mock axial plane at Z=9 (one pixel below the top)
+        let axial_plane = ImagePlane {
+            position: Vec3::new(0.0, 0.0, 9.0),
+            row_direction: Vec3::new(1.0, 0.0, 0.0),
+            col_direction: Vec3::new(0.0, 1.0, 0.0),
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            pixel_spacing: (1.0, 1.0),
+            dimensions: (256, 256),
+            frame_of_reference_uid: Some("1.2.3".into()),
+        };
+
+        let result = coronal_plane.intersect(&axial_plane);
+        assert!(result.is_some(), "Should find intersection");
+
+        let (start, end) = result.unwrap();
+        // The axial at Z=9 should intersect the coronal at pixel row ≈ 1
+        // because: origin.z = 10, col_dir.z = -1, spacing = 1.0
+        // row = (origin.z - axial_z) / spacing = (10 - 9) / 1.0 = 1.0
+        let expected_row = 1.0;
+        let tolerance = 0.5;
+        assert!(
+            (start.y - expected_row).abs() < tolerance,
+            "Reference line Y should be at row {:.1} (Z=9), got start.y={:.1}",
+            expected_row,
+            start.y
+        );
+        assert!(
+            (end.y - expected_row).abs() < tolerance,
+            "Reference line Y end should be at row {:.1}, got end.y={:.1}",
+            expected_row,
+            end.y
+        );
+
+        // The pixel data at row 1 should contain the correct Z-level voxels.
+        // row 1 = row_z=1 (forward iter since z_sign < 0)
+        // Patient Z at row_z=1: origin.z + 1 * col_dir.z * sy = 10 + 1*(-1)*1 = 9mm ✓
+        let (_, z_spacing, _) = vol.get_axis_direction(PatientAxis::Z);
+        let pixel_z = vol.origin.z + 1.0 * vol.col_direction.z * z_spacing;
+        assert!(
+            (pixel_z - 9.0).abs() < 0.01,
+            "Pixel row 1 should be at Z=9, computed Z={:.3}",
+            pixel_z
+        );
+    }
+
+    /// Verify that compute_image_plane accounts for the X-axis reversal in
+    /// resample so that pixel_to_patient returns coordinates matching the
+    /// actual voxel data at each pixel position.
+    #[test]
+    fn test_coronal_image_plane_x_consistency() {
+        // Sagittal volume with x_sign > 0 (slice_dir.x = +1) triggers x_iter reversal
+        let vol = Volume {
+            col_direction: Vec3::new(0.0, 0.0, -1.0),
+            origin: Vec3::new(-5.0, -10.0, 10.0),
+            ..make_sagittal_volume()
+        };
+        let (_w, _h, d) = vol.dimensions; // 4, 3, 5
+
+        let col_idx = 2usize;
+        let slice = vol.resample(AnatomicalPlane::Coronal, col_idx).unwrap();
+        let plane = slice.compute_image_plane(&vol, col_idx);
+
+        // When x_sign > 0, x_iter is reversed: pixel col 0 = slice d-1 = most positive X.
+        // Slice d-1 is at X = origin.x + (d-1) * slice_spacing.
+        let (_, _, x_sign) = vol.get_axis_direction(PatientAxis::X);
+        assert!(x_sign > 0.0, "Test requires x_sign > 0");
+
+        let expected_x_at_col0 = vol.origin.x + (d as f64 - 1.0) * vol.spacing.2;
+        let plane_x_at_col0 = plane.pixel_to_patient(0.0, 0.0).x;
+
+        // After the fix, the ImagePlane should match the pixel data for X.
+        assert!(
+            (expected_x_at_col0 - plane_x_at_col0).abs() < 0.01,
+            "ImagePlane X at col 0 ({:.1}) should match pixel data X ({:.1})",
+            plane_x_at_col0,
+            expected_x_at_col0,
+        );
+
+        // Verify the Z and Y are correct regardless of X issue
+        let top_pt = plane.pixel_to_patient(0.0, 0.0);
+        let expected_y = vol.origin.y + col_idx as f64 * vol.spacing.0;
+        assert!(
+            (top_pt.y - expected_y).abs() < 0.01,
+            "Y should be {:.1}, got {:.1}", expected_y, top_pt.y,
+        );
+        assert!(
+            (top_pt.z - vol.origin.z).abs() < 0.01,
+            "Z should be {:.1} (origin), got {:.1}", vol.origin.z, top_pt.z,
+        );
     }
 }

@@ -1,6 +1,6 @@
 # MPR Implementation Guide
 
-This document explains the critical details of Multi-Planar Reconstruction (MPR) in Sauhu, including coordinate systems, sync mechanisms, and common pitfalls.
+This document explains the critical details of Multi-Planar Reconstruction (MPR) in Sauhu, including coordinate systems, sync mechanisms, and reference line rendering.
 
 ## Overview
 
@@ -14,9 +14,9 @@ MPR allows viewing a 3D volume (e.g., 3D Sagittal T1) in any anatomical plane (A
 ## Coordinate Systems
 
 ### Patient Coordinate System (DICOM LPS)
-- **X**: Left → Right (patient's left is positive)
-- **Y**: Posterior → Anterior (patient's back is positive)
-- **Z**: Inferior → Superior (patient's head is positive)
+- **X**: Left to Right (patient's left is positive)
+- **Y**: Posterior to Anterior (patient's back is positive)
+- **Z**: Inferior to Superior (patient's head is positive)
 
 ### Volume Index Space
 - **(i, j, k)**: Integer indices into the 3D voxel array
@@ -29,11 +29,9 @@ MPR allows viewing a 3D volume (e.g., 3D Sagittal T1) in any anatomical plane (A
 
 ## Critical: Image Position - Corner vs Center
 
-**This is the most important concept for sync to work correctly.**
-
 ### The Problem: Gantry Tilt
 
-Brain MRI acquisitions often use **gantry tilt** (typically 15-25°) to align axial slices parallel to the AC-PC line and avoid imaging the eyes.
+Brain MRI acquisitions often use **gantry tilt** (typically 15-25 degrees) to align axial slices parallel to the AC-PC line and avoid imaging the eyes.
 
 For a tilted slice:
 - `ImagePositionPatient` (DICOM tag 0020,0032) is the **corner** position
@@ -42,16 +40,16 @@ For a tilted slice:
 ```
 Side view of tilted axial slice:
 
-        Corner (IPP) ----→ Z_corner
+        Corner (IPP) ----> Z_corner
        /
-      /  ~20° tilt
+      /  ~20 deg tilt
      /
-    Center ----→ Z_center (higher Z, more superior)
+    Center ----> Z_center (higher Z, more superior)
 ```
 
-For a 256mm FOV with 20° tilt:
+For a 256mm FOV with 20 deg tilt:
 ```
-Z_center = Z_corner + (128mm × sin(20°)) ≈ Z_corner + 44mm
+Z_center = Z_corner + (128mm x sin(20 deg)) ~ Z_corner + 44mm
 ```
 
 ### The Solution: Always Use Center Position for Sync
@@ -61,34 +59,21 @@ Both regular series AND MPR must compute slice location at the **image center**,
 ```rust
 // Regular series (series_utils.rs)
 let center_z = corner_z
-    + (half_cols × col_spacing × row_dir_z)
-    + (half_rows × row_spacing × col_dir_z);
+    + (half_cols * col_spacing * row_dir_z)
+    + (half_rows * row_spacing * col_dir_z);
 
-// MPR series (mpr.rs)
+// MPR series (mpr.rs - to_dicom_image and MprSeries::generate)
 let center_pos = corner_pos
-    .add(&row_direction.scale(half_w × col_spacing))
-    .add(&col_direction.scale(half_h × row_spacing));
+    .add(&row_direction.scale(half_w * col_spacing))
+    .add(&col_direction.scale(half_h * row_spacing));
 ```
 
-Where:
-- `row_dir` = ImageOrientationPatient[0:3] (points along columns, horizontal)
-- `col_dir` = ImageOrientationPatient[3:6] (points along rows, vertical)
-- For tilted axial: `col_dir_z = sin(tilt_angle)` ≠ 0
-
-### Why This Matters
+This matters because:
 
 | Scenario | Corner Z | Center Z | Anatomy |
 |----------|----------|----------|---------|
 | Tilted regular axial slice 30 | 30mm | 74mm | Basal ganglia |
 | Untilted MPR axial at same anatomy | 74mm | 74mm | Basal ganglia |
-
-If we use corner Z for sync:
-- Regular series reports Z=30mm for basal ganglia
-- MPR at Z=30mm shows inferior temporal lobe (wrong!)
-
-If we use center Z for sync:
-- Both report Z=74mm for basal ganglia
-- Sync works correctly!
 
 ## MPR Slice Generation
 
@@ -96,54 +81,115 @@ If we use center Z for sync:
 
 ```rust
 pub struct Volume {
-    pub data: Vec<u16>,           // 3D voxel data, row-major order
-    pub dimensions: (usize, usize, usize),  // (width, height, depth)
-    pub spacing: (f64, f64, f64), // Voxel spacing in mm
-    pub origin: Vec3D,            // Patient coordinate of voxel (0,0,0)
+    pub data: Vec<u16>,           // 3D voxel data, Z-Y-X order (slice, row, column)
+    pub dimensions: (usize, usize, usize),  // (width, height, depth) = (cols, rows, slices)
+    pub spacing: (f64, f64, f64), // (col_spacing, row_spacing, slice_spacing)
+    pub origin: Vec3,             // Patient coordinate of first sorted slice corner
+    pub row_direction: Vec3,      // Unit vector along columns (horizontal in slice)
+    pub col_direction: Vec3,      // Unit vector along rows (vertical in slice)
+    pub slice_direction: Vec3,    // Slice normal (between-slice direction)
     pub acquisition_orientation: AcquisitionOrientation,
-    // ... direction vectors for each axis
+    // ...
 }
 ```
 
 ### Axis Direction Mapping
 
-The volume maps its dimensions to patient axes based on acquisition orientation:
+`Volume::get_axis_direction(axis)` returns `(direction, spacing, sign)` for the
+volume direction that most closely aligns with a patient axis. The sign indicates
+whether the direction is positive (+1) or negative (-1) along that axis. This is
+used by both `resample()` and `compute_image_plane()` to ensure consistency.
 
-```rust
-// For a sagittal-acquired volume:
-// - Volume X dimension (width) = slices along patient X (L-R)
-// - Volume Y dimension (height) = along patient Z (S-I)
-// - Volume Z dimension (depth) = along patient Y (A-P)
+### Resampling via Reslice Operations
 
-fn get_axis_direction(&self, axis: PatientAxis) -> (Vec3D, f64, f64) {
-    // Returns (direction_vector, spacing, sign)
-    // Maps from volume index to patient coordinate change
-}
-```
+The resample function classifies each target plane as one of three operations
+based on the acquisition orientation:
 
-### Resampling Process
+| Operation | Description | Used when |
+|-----------|-------------|-----------|
+| `Native` | Return original slices unchanged | Target matches acquisition |
+| `AlongRows` | Take one row from each slice | Axial from Sag/Cor, etc. |
+| `AlongColumns` | Take one column from each slice | Coronal from Sag, Sagittal from Ax, etc. |
 
-To generate an axial MPR slice at index `k`:
+### Axis Reversal in Resampling
 
-1. Determine the slice plane position in patient coordinates
-2. For each output pixel (col, row):
-   - Compute patient coordinate using ImagePlane geometry
-   - Transform to volume index space
-   - Sample (trilinear interpolation) from volume data
+The resample applies two axis reversals for correct anatomical display:
 
-```rust
-// Simplified resampling
-for row in 0..height {
-    for col in 0..width {
-        let patient_pos = corner
-            + row_dir.scale(col as f64 * col_spacing)
-            + col_dir.scale(row as f64 * row_spacing);
+1. **Z reversal** (`z_sign > 0`): When the volume's Z axis increases toward
+   superior, the Z iteration is reversed so pixel row 0 = superior (top of image).
 
-        let (vi, vj, vk) = patient_to_volume_index(patient_pos);
-        output[row][col] = trilinear_sample(volume, vi, vj, vk);
-    }
-}
-```
+2. **X reversal** (`x_sign > 0`): When the volume's X axis increases toward
+   patient left, the X iteration is reversed so pixel column 0 = patient left
+   (radiological convention: patient left on screen right is NOT applied;
+   instead patient left at column 0).
+
+Both reversals must be matched by `compute_image_plane()` so the ImagePlane
+geometry accurately describes each pixel's patient coordinate.
+
+## ImagePlane Geometry (compute_image_plane)
+
+`ReformattedSlice::compute_image_plane()` produces an `ImagePlane` that describes
+the 3D patient-coordinate geometry of the displayed MPR image. This is used by
+`ImagePlane::intersect()` to compute reference line positions.
+
+### Key invariants
+
+1. **Position** is the top-left pixel (0,0) in patient coordinates.
+2. **row_direction** points from pixel (0,0) toward pixel (width,0), matching the
+   actual voxel data at each column.
+3. **col_direction** points from pixel (0,0) toward pixel (0,height), matching the
+   actual voxel data at each row.
+4. `pixel_to_patient(px, py) = position + row_direction * px * col_spacing + col_direction * py * row_spacing`
+   must return the correct patient coordinate for the voxel displayed at that pixel.
+
+### How axis reversals are handled
+
+For the **Z axis** (affects col_direction in Coronal/Sagittal):
+- `z_sign > 0`: Position is shifted to the superior end of the Z range.
+  col_direction = `z_dir.negate()` (pointing inferior/downward).
+- `z_sign < 0`: Position stays at origin (already superior).
+  col_direction = `z_dir` (already points inferior since z_dir.z < 0).
+
+For the **X axis** (affects row_direction in Coronal/Axial):
+- `x_sign > 0`: Position is shifted to the far X end by
+  `x_dir * (width - 1) * col_spacing`. row_direction = `x_dir.negate()`.
+- `x_sign < 0`: No adjustment needed.
+
+## Reference Lines
+
+Reference lines show where the active slice intersects other views.
+
+### Two Code Paths
+
+**1. Geometry-based (`ImagePlane::intersect`)** in `calculate_reference_lines()`:
+The primary path. Used for all cross-series reference lines and for MPR-to-original
+reference lines. Projects the active plane through 3D patient coordinates and
+finds where it crosses the other viewport's image edges. Handles arbitrary
+orientations including gantry tilt.
+
+Requires: both viewports have `ImagePlane` with matching `frame_of_reference_uid`,
+and the planes are not parallel.
+
+**2. Index-based** in `calculate_mpr_reference_lines()`:
+Used only for MPR-to-MPR within the same volume (`Arc::ptr_eq`). Maps the active
+slice index directly to a pixel position on the other viewport. Fires only when
+both viewports share the same `Arc<Volume>`.
+
+### Rendering: pixel_ratio Correction
+
+The `draw_reference_lines()` function must apply the same `pixel_ratio`
+(row_spacing / col_spacing) correction as the image rendering. Without this,
+reference lines drift from the anatomy on images with non-square pixels, with
+the error increasing from zero at the image center to maximum at the edges.
+
+MPR reformats commonly have non-square pixels when in-plane resolution differs
+from slice spacing.
+
+### Reference Line Colors
+
+- **Yellow** (255, 255, 0): Axial plane
+- **Cyan** (0, 255, 255): Coronal plane
+- **Magenta** (255, 0, 255): Sagittal plane
 
 ## Sync Mechanism
 
@@ -151,76 +197,21 @@ for row in 0..height {
 
 ```rust
 pub struct SyncInfo {
-    pub frame_of_reference_uid: Option<String>,  // Must match for sync
-    pub study_instance_uid: Option<String>,      // Should match
-    pub orientation: Option<&'static str>,       // "Ax", "Cor", "Sag"
-    pub slice_locations: Vec<Option<f64>>,       // CENTER position for each slice
+    pub frame_of_reference_uid: Option<String>,
+    pub study_instance_uid: Option<String>,
+    pub orientation: Option<AnatomicalPlane>,
+    pub slice_locations: Vec<Option<f64>>,  // CENTER position for each slice
 }
 ```
 
 ### Sync Algorithm
 
-```rust
-fn sync_to_location(target_z: f64, other_series: &SyncInfo) -> usize {
-    // 1. Check frame_of_reference matches
-    // 2. Check orientation matches (Ax syncs with Ax, etc.)
-    // 3. Find slice with closest slice_location to target_z
-    other_series.slice_locations
-        .iter()
-        .enumerate()
-        .min_by(|(_, a), (_, b)| {
-            (a - target_z).abs().partial_cmp(&(b - target_z).abs())
-        })
-        .map(|(idx, _)| idx)
-}
-```
+Sync matches viewports by orientation (Ax syncs with Ax, Cor with Cor, etc.)
+within the same Frame of Reference. When the active viewport scrolls, other
+viewports with matching orientation find the closest slice_location.
 
-## Reference Lines
-
-Reference lines show where the active slice intersects other views.
-
-### Principle
-
-For orthogonal planes, the intersection is a straight line:
-- Axial slice intersects Sagittal/Coronal as a **horizontal** line
-- Sagittal slice intersects Axial as a **vertical** line
-- Coronal slice intersects Axial as a **horizontal** line
-
-### Two Code Paths
-
-**1. Geometry-based (`ImagePlane::intersect`)** in `calculate_reference_lines()`:
-Used for cross-volume reference lines (e.g., MPR to original series, coregistered
-to target). Projects the active plane through 3D patient coordinates and finds
-where it crosses the other viewport's image edges. This is the primary path and
-handles arbitrary orientations.
-
-**2. Index-based** in `calculate_mpr_reference_lines()`:
-Used for MPR-to-MPR within the same volume (`Arc::ptr_eq`). Maps slice index
-directly to pixel position. Only fires when both viewports share the same
-`Arc<Volume>`.
-
-### Critical: Resample and ImagePlane Must Agree
-
-The `resample()` function produces pixel data with a specific layout (which end
-is at row 0). The `compute_image_plane()` function describes that layout in 3D
-patient coordinates. If they disagree, `ImagePlane::intersect()` computes
-reference line positions that don't match the displayed anatomy.
-
-The key variable is `z_sign` from `get_axis_direction(PatientAxis::Z)`:
-
-| z_sign | Volume z=0 | Superior at pixel row 0 via | ImagePlane position |
-|--------|------------|----------------------------|---------------------|
-| > 0 | inferior | `(0..d).rev()` | origin + z_offset (far end) |
-| < 0 | superior | forward `(0..d)` | origin (near end) |
-
-Both `resample()` and `compute_image_plane()` check `z_sign` and handle each
-case so that pixel row 0 always corresponds to the superior end of the Z range.
-
-### Reference Line Colors
-
-- **Yellow** (255, 255, 0): Axial plane
-- **Cyan** (0, 255, 255): Coronal plane
-- **Magenta** (255, 0, 255): Sagittal plane
+Cross-orientation sync is intentionally disabled. Use reference lines to see
+the spatial relationship between different orientations.
 
 ## Common Pitfalls
 
@@ -229,15 +220,21 @@ case so that pixel row 0 always corresponds to the superior end of the Z range.
 **Cause**: Using corner position instead of center position
 **Fix**: Always compute center position using ImageOrientationPatient
 
-### 2. Reference Line Inversion
-**Symptom**: Scrolling UP in axial moves reference line DOWN in coronal/sagittal
-**Cause**: `resample()` and `compute_image_plane()` disagree about pixel layout.
-The resample hardcodes a z-iteration order, but the ImagePlane derives directions
-from the raw volume geometry. When `slice_direction.z < 0`, the two disagree.
-**Fix**: Both must check `z_sign` and handle each case consistently. See the
-"Resample and ImagePlane Must Agree" section above.
+### 2. Resample and ImagePlane Disagree on Pixel Layout
+**Symptom**: Reference lines appear at wrong position or inverted
+**Cause**: `resample()` reverses an axis for display, but `compute_image_plane()`
+does not account for the reversal
+**Fix**: Both functions must check `z_sign` and `x_sign` and handle each case
+consistently. See the "Axis Reversal in Resampling" section.
 
-### 3. Wrong Pixel Spacing Convention
+### 3. Missing pixel_ratio in Reference Line Drawing
+**Symptom**: Reference lines drift from the anatomy toward image edges,
+correct only at the image center
+**Cause**: `draw_reference_lines()` does not apply `pixel_ratio` stretch
+that the rendering functions apply
+**Fix**: Multiply Y coordinates and vertical scaling by `pixel_ratio`
+
+### 4. Wrong Pixel Spacing Convention
 **Symptom**: Images appear stretched or sync is slightly off
 **Cause**: Confusing row_spacing vs col_spacing
 **Remember**:
@@ -246,19 +243,15 @@ from the raw volume geometry. When `slice_direction.z < 0`, the two disagree.
 - Row direction moves along columns (horizontal)
 - Col direction moves along rows (vertical)
 
-### 4. Assuming Untilted Acquisition
-**Symptom**: Works for some patients, fails for others
-**Cause**: Hardcoding assumptions about slice orientation
-**Fix**: Always use ImageOrientationPatient for geometry calculations
-
 ## File Reference
 
 | File | Responsibility |
 |------|----------------|
-| `src/dicom/mpr.rs` | Volume resampling, MPR slice generation, ImagePlane geometry |
-| `src/dicom/series_utils.rs` | Regular series slice_location computation (with tilt correction) |
+| `src/dicom/mpr.rs` | Volume, resample, compute_image_plane, MprSeries generation |
+| `src/dicom/geometry.rs` | ImagePlane, intersect, pixel_to_patient |
+| `src/dicom/series_utils.rs` | Regular series slice_location (with tilt correction) |
 | `src/ui/viewport_manager.rs` | Reference line calculation, sync coordination |
-| `src/dicom/spatial.rs` | Geometric utilities, find_closest_slice |
+| `src/ui/viewport.rs` | Reference line rendering (draw_reference_lines) |
 
 ## Testing Checklist
 
@@ -267,8 +260,10 @@ When modifying MPR or sync code, verify:
 - [ ] Regular Axial syncs with MPR Axial at same anatomical level
 - [ ] Tilted acquisitions (brain MRI) sync correctly
 - [ ] Reference lines move in correct direction when scrolling
-- [ ] All three planes (Ax/Cor/Sag) sync and show reference lines correctly
-- [ ] Works for different acquisition orientations (axial-acquired, sagittal-acquired, etc.)
+- [ ] All three planes (Ax/Cor/Sag) show reference lines correctly
+- [ ] Reference lines correct at image edges, not just center
+- [ ] Works for different acquisition orientations (axial, sagittal, coronal)
+- [ ] Coregistered images show correct reference lines
 
 ## History
 
@@ -276,8 +271,14 @@ When modifying MPR or sync code, verify:
 1. Gantry tilt correction is essential for brain MRI sync
 2. Both regular series and MPR must use consistent center-based slice locations
 
-**April 2026**: Fixed reference line inversion. Key lessons:
+**April 2026**: Fixed reference line inversion for z_sign-dependent volumes.
 3. Resample pixel layout and ImagePlane geometry must agree on z-axis direction
 4. The `z_sign` from `get_axis_direction(PatientAxis::Z)` determines whether
    z-index increases toward superior (> 0) or inferior (< 0)
 5. Never hardcode iteration order; always derive from volume geometry
+
+**April 2026**: Fixed cross-series reference line positioning on MPR views.
+6. `draw_reference_lines()` must apply `pixel_ratio` to match rendered image scaling
+7. `compute_image_plane()` must account for X-axis reversal when `x_sign > 0`
+8. These fixes resolved reference lines being wrong on coronal/sagittal MPR
+   when viewing cross-series (e.g., T2 axial reference on T1 coronal MPR)

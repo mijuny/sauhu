@@ -1127,23 +1127,29 @@ impl Viewport {
         let Some(image) = self.image.as_ref() else {
             return;
         };
+        // Must account for pixel_ratio (non-square pixels) to match the rendered image.
+        // render_cpu and render_gpu both stretch the Y dimension by pixel_ratio.
+        let ratio = self.pixel_ratio();
         let img_size = Vec2::new(image.width as f32, image.height as f32);
-        let scaled_size = img_size * self.view.zoom;
+        let scaled_size =
+            Vec2::new(img_size.x * self.view.zoom, img_size.y * self.view.zoom * ratio);
 
         // Calculate image position in viewport
         let center = rect.center() + self.view.pan;
         let img_left = center.x - scaled_size.x / 2.0;
         let img_top = center.y - scaled_size.y / 2.0;
 
+        let y_scale = self.view.zoom * ratio;
+
         for ref_line in ref_lines {
             // Convert pixel coordinates to screen coordinates
             let start_screen = Pos2::new(
                 img_left + ref_line.start.x as f32 * self.view.zoom,
-                img_top + ref_line.start.y as f32 * self.view.zoom,
+                img_top + ref_line.start.y as f32 * y_scale,
             );
             let end_screen = Pos2::new(
                 img_left + ref_line.end.x as f32 * self.view.zoom,
-                img_top + ref_line.end.y as f32 * self.view.zoom,
+                img_top + ref_line.end.y as f32 * y_scale,
             );
 
             // Draw the reference line

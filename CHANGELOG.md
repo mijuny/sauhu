@@ -1,5 +1,42 @@
 # Changelog
 
+## 2026-04-08 -- Fix cross-series reference lines on MPR views
+
+### Fixed
+
+- **Reference line pixel_ratio mismatch**: `draw_reference_lines()` did not apply
+  the `pixel_ratio` (row_spacing / col_spacing) correction that the image renderer
+  applies. On MPR images with non-square pixels (common when in-plane resolution
+  differs from slice spacing), reference lines drifted from the correct anatomical
+  position, with the error growing toward the image edges. Fixed by applying the
+  same Y-axis scaling as `render_cpu` and `render_gpu`.
+
+- **X-axis position mismatch in ImagePlane**: `compute_image_plane()` did not
+  account for the X-axis reversal applied by `resample()` when `x_sign > 0`.
+  Pixel column 0 showed data from the far end of the X range while the ImagePlane
+  described the near end. This caused incorrect patient coordinates from
+  `pixel_to_patient()`, affecting vertical reference lines and coordinate lookups.
+  Fixed by shifting the ImagePlane position and negating the row direction when
+  the resample reverses X.
+
+- **Z-iteration not reversed for z_sign > 0 in AlongColumns reslice**: The
+  sagittal-to-coronal and coronal-to-sagittal reslice paths did not reverse the Z
+  iteration when `z_sign > 0`, putting inferior at pixel row 0 while the ImagePlane
+  described superior. Fixed by adding the same `z_sign` check already present in
+  other reslice paths.
+
+### Added
+
+- 4 new tests verifying coronal MPR ImagePlane consistency with pixel data for
+  both z_sign variants, reference line intersection accuracy, and X-axis alignment.
+
+### Changed
+
+- Updated `docs/mpr-implementation.md` to reflect the current reference line
+  architecture (geometry-based primary path, index-based for same-volume MPR)
+  and document the axis reversal handling, pixel_ratio requirement, and common
+  pitfalls.
+
 ## 2026-04-07 -- Roadmap to 10: Tier 2
 
 ### Changed
