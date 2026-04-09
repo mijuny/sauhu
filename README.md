@@ -323,38 +323,57 @@ For systems with large RAM (64GB+), increase `max_memory_gb` for better performa
 ```
 sauhu/
 ├── src/
-│   ├── main.rs              # Entry point
-│   ├── app.rs               # Application state & logic
-│   ├── config.rs            # Configuration with shortcuts
-│   ├── cache.rs             # LRU image cache with prefetching
-│   ├── ipc.rs               # Unix socket IPC for external apps
+│   ├── main.rs                  # Entry point, eframe setup
+│   ├── app/                     # Application state (decomposed into subsystems)
+│   │   ├── mod.rs               # SauhuApp, event handling
+│   │   ├── background.rs        # DB queries, directory scans, image cache
+│   │   ├── coregistration.rs    # Coregistration UI integration
+│   │   ├── image_loading.rs     # Async file loading thread
+│   │   ├── interaction.rs       # Mouse interaction, measurements
+│   │   ├── mpr.rs               # MPR pipeline management
+│   │   └── quick_fetch.rs       # Ctrl+G PACS retrieve
+│   ├── config.rs                # TOML configuration with shortcuts
+│   ├── cache.rs                 # O(1) LRU image cache with prefetching
+│   ├── ipc.rs                   # Unix socket IPC for external apps
+│   ├── hanging_protocol.rs      # Display protocol rules
 │   ├── dicom/
-│   │   ├── mod.rs
-│   │   ├── parser.rs        # DICOM file parsing
-│   │   ├── image.rs         # Pixel data, ROI stats, anatomy detection
-│   │   ├── geometry.rs      # Image planes, reference lines
-│   │   └── mpr.rs           # MPR volume construction and resampling
+│   │   ├── parser.rs            # DICOM file parsing
+│   │   ├── image.rs             # Pixel data, ROI stats, anatomy detection
+│   │   ├── anonymize.rs         # Patient data stripping
+│   │   ├── geometry.rs          # Image planes, reference lines
+│   │   ├── spatial.rs           # Spatial calculations
+│   │   ├── series_utils.rs      # Series grouping, slice location
+│   │   └── mpr/                 # MPR volume construction and resampling
 │   ├── ui/
-│   │   ├── mod.rs
-│   │   ├── viewport.rs      # Image display, measurements
-│   │   ├── viewport_manager.rs  # Multi-viewport coordination
-│   │   ├── annotations.rs   # Measurement data structures
+│   │   ├── viewport.rs          # Single viewport rendering
+│   │   ├── viewport_manager.rs  # Multi-viewport layout & sync
+│   │   ├── annotations.rs       # Measurement data structures
 │   │   ├── patient_sidebar.rs   # Series browser
-│   │   ├── database_window.rs   # Patient/PACS browser
-│   │   └── thumbnail.rs     # Async thumbnail loading
+│   │   ├── thumbnail_cache.rs   # Async thumbnail loading
+│   │   └── database_window/     # Patient/PACS browser
+│   │       ├── local_browser.rs # Local study browser
+│   │       ├── pacs_query.rs    # PACS search & retrieve UI
+│   │       └── anonymize.rs     # Anonymization UI
 │   ├── gpu/
-│   │   ├── mod.rs
-│   │   ├── renderer.rs      # wgpu pipeline + GPU texture cache
-│   │   ├── texture.rs       # GPU texture management
-│   │   └── shaders/
-│   │       └── windowing.wgsl   # GPU windowing shader
-│   ├── pacs/
-│   │   ├── mod.rs
-│   │   ├── scu.rs           # DICOM SCU (query/retrieve)
-│   │   └── scp.rs           # DICOM SCP (storage)
+│   │   ├── renderer.rs          # wgpu pipeline + GPU texture cache
+│   │   ├── texture.rs           # GPU texture management
+│   │   ├── coregistration.rs    # GPU coregistration compute
+│   │   └── shaders/             # WGSL shaders
+│   ├── coregistration/          # Intensity-based coregistration
+│   │   ├── manager.rs           # Registration orchestration
+│   │   ├── metrics.rs           # NCC similarity metric
+│   │   ├── optimizer.rs         # Powell optimizer
+│   │   ├── pipeline.rs          # Multi-resolution pipeline
+│   │   └── transform.rs         # Affine transforms
+│   ├── pacs/                    # Re-exports sauhu-common
 │   └── db/
-│       ├── mod.rs
-│       └── schema.rs        # SQLite schema
+│       └── schema.rs            # SQLite schema & migrations
+├── sauhu-common/src/            # Shared DICOM networking crate
+│   └── pacs/
+│       ├── query.rs             # C-FIND
+│       ├── retrieve.rs          # C-MOVE orchestration
+│       ├── scp.rs               # Storage SCP (receiver)
+│       └── scu.rs               # Service class user (sender)
 ```
 
 ### Data Flow
@@ -419,12 +438,13 @@ sauhu/
 - [x] Async file operations (no UI freezing)
 - [x] IPC integration for external apps (Sanelu)
 - [x] MPR (Multi-Planar Reconstruction) with trilinear interpolation
+- [x] Volume coregistration (GPU-accelerated rigid registration)
+- [x] Study anonymization
+- [x] CI (GitHub Actions: tests + clippy)
 
 ### Planned
-- [x] Volume coregistration (GPU-accelerated rigid registration)
+- [ ] KO (Key Object Selection) and SR (Structured Reports) display
 - [ ] Image fusion (alpha blend, color overlay, checkerboard)
-- [ ] DICOM SR (Structured Reports)
-- [ ] Hanging protocols
 
 ## IPC Integration
 
