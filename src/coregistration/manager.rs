@@ -33,7 +33,6 @@ pub enum CoregistrationMode {
         source_viewport: usize,
     },
     /// Registration completed, waiting for user to accept/reject
-    #[allow(dead_code)] // constructed by set_completed()
     Completed {
         /// Target viewport index
         target_viewport: usize,
@@ -87,20 +86,6 @@ struct RegistrationTask {
     started: Instant,
 }
 
-/// Stored transform for applying to other series
-#[derive(Clone)]
-#[allow(dead_code)] // coregistration module API
-pub struct StoredTransform {
-    /// The rigid transform
-    pub transform: RigidTransform,
-    /// Source study UID (for matching other series from same study)
-    pub source_study_uid: Option<String>,
-    /// Target frame of reference UID (for sync after applying)
-    pub target_frame_of_reference_uid: Option<String>,
-    /// Target study instance UID (for sync after applying)
-    pub target_study_instance_uid: Option<String>,
-}
-
 /// Coregistration manager
 pub struct CoregistrationManager {
     /// Current mode
@@ -109,9 +94,6 @@ pub struct CoregistrationManager {
     task: Option<RegistrationTask>,
     /// Last error message (for retry dialog)
     last_error: Option<String>,
-    /// Last successful transform for applying to other series
-    #[allow(dead_code)] // coregistration module API
-    last_transform: Option<StoredTransform>,
 }
 
 impl Default for CoregistrationManager {
@@ -126,7 +108,6 @@ impl CoregistrationManager {
             mode: CoregistrationMode::Inactive,
             task: None,
             last_error: None,
-            last_transform: None,
         }
     }
 
@@ -468,23 +449,6 @@ impl CoregistrationManager {
             .unwrap_or(0)
     }
 
-    /// Set completion state
-    #[allow(dead_code)] // coregistration module API
-    pub fn set_completed(&mut self, result: RegistrationResult) {
-        if let CoregistrationMode::Running {
-            target_viewport,
-            source_viewport,
-        } = self.mode
-        {
-            self.mode = CoregistrationMode::Completed {
-                target_viewport,
-                source_viewport,
-                result: Box::new(result),
-            };
-        }
-        self.task = None;
-    }
-
     /// Reset to inactive state
     pub fn reset(&mut self) {
         self.mode = CoregistrationMode::Inactive;
@@ -492,38 +456,9 @@ impl CoregistrationManager {
         self.last_error = None;
     }
 
-    /// Get last error message
-    #[allow(dead_code)] // coregistration module API
-    pub fn last_error(&self) -> Option<&str> {
-        self.last_error.as_deref()
-    }
-
     /// Set error message for retry dialog
     pub fn set_error(&mut self, error: String) {
         self.last_error = Some(error);
-    }
-
-    /// Store a successful transform for later use (applying to other series)
-    #[allow(dead_code)] // coregistration module API
-    pub fn store_transform(
-        &mut self,
-        transform: RigidTransform,
-        source_study_uid: Option<String>,
-        target_frame_of_reference_uid: Option<String>,
-        target_study_instance_uid: Option<String>,
-    ) {
-        self.last_transform = Some(StoredTransform {
-            transform,
-            source_study_uid,
-            target_frame_of_reference_uid,
-            target_study_instance_uid,
-        });
-    }
-
-    /// Get the stored transform (if any)
-    #[allow(dead_code)] // coregistration module API
-    pub fn get_stored_transform(&self) -> Option<&StoredTransform> {
-        self.last_transform.as_ref()
     }
 }
 

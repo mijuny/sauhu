@@ -12,18 +12,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 // HU windowing ranges for CT coregistration preprocessing
-#[allow(dead_code)] // coregistration preprocessing constants
 const CT_BRAIN_HU_MIN: f64 = -500.0; // Bone window: center=500, width=2000
-#[allow(dead_code)]
 const CT_BRAIN_HU_MAX: f64 = 1500.0;
-#[allow(dead_code)]
 const CT_BODY_HU_MIN: f64 = -160.0; // Soft tissue window: center=40, width=400
-#[allow(dead_code)]
 const CT_BODY_HU_MAX: f64 = 240.0;
 
 /// Registration configuration
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // coregistration module API
 pub struct RegistrationConfig {
     /// Modality of target image
     pub target_modality: Modality,
@@ -53,31 +48,6 @@ impl Default for RegistrationConfig {
 }
 
 impl RegistrationConfig {
-    /// Create config for brain CT-CT registration
-    #[allow(dead_code)] // coregistration module API
-    pub fn brain_ct() -> Self {
-        Self {
-            target_modality: Modality::CT,
-            source_modality: Modality::CT,
-            anatomy: Anatomy::Brain,
-            optimize_scale: false,
-            metric: MetricType::Ncc,
-            schedule: PyramidSchedule::fast(),
-        }
-    }
-
-    /// Create config for brain MRI-MRI registration
-    #[allow(dead_code)] // coregistration module API
-    pub fn brain_mri() -> Self {
-        Self {
-            target_modality: Modality::Mri,
-            source_modality: Modality::Mri,
-            anatomy: Anatomy::Brain,
-            optimize_scale: false,
-            metric: MetricType::Ncc,
-            schedule: PyramidSchedule::fast(),
-        }
-    }
 
     /// Detect appropriate config from modality strings
     pub fn detect(target_modality: Option<&str>, source_modality: Option<&str>) -> Self {
@@ -121,7 +91,6 @@ impl Modality {
 
 /// Anatomy type (affects preprocessing)
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)] // coregistration module API
 pub enum Anatomy {
     Brain,
     Body,
@@ -175,31 +144,6 @@ impl VolumeGeometry {
             spacing: new_spacing,
             extent: self.extent,
         }
-    }
-
-    /// Convert voxel coordinates to physical (mm) coordinates
-    ///
-    /// Voxel (0,0,0) maps to physical (0,0,0)
-    /// Voxel center is at (i+0.5)*spacing
-    #[inline]
-    #[allow(dead_code)] // coregistration module API
-    pub fn voxel_to_physical(&self, voxel: (f64, f64, f64)) -> (f64, f64, f64) {
-        (
-            voxel.0 * self.spacing.0,
-            voxel.1 * self.spacing.1,
-            voxel.2 * self.spacing.2,
-        )
-    }
-
-    /// Convert physical (mm) coordinates to voxel coordinates
-    #[inline]
-    #[allow(dead_code)] // coregistration module API
-    pub fn physical_to_voxel(&self, physical: (f64, f64, f64)) -> (f64, f64, f64) {
-        (
-            physical.0 / self.spacing.0,
-            physical.1 / self.spacing.1,
-            physical.2 / self.spacing.2,
-        )
     }
 
     /// Get the physical center of the volume
@@ -535,25 +479,8 @@ fn rotation_matrix_to_euler_xyz(r: &[[f64; 3]; 3]) -> (f64, f64, f64) {
     (rx, ry, rz)
 }
 
-/// Registration progress info
-#[derive(Debug, Clone)]
-#[allow(dead_code)] // coregistration module API
-pub struct RegistrationProgress {
-    /// Current level (0 = finest)
-    pub level: usize,
-    /// Total levels
-    pub total_levels: usize,
-    /// Current iteration within level
-    pub iteration: usize,
-    /// Total iterations for current level
-    pub total_iterations: usize,
-    /// Current metric value
-    pub metric: f64,
-}
-
 /// Registration result
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // coregistration module API
 pub enum RegistrationResult {
     Success {
         /// Final rigid transform
@@ -575,7 +502,6 @@ pub enum RegistrationResult {
 }
 
 /// Registration pipeline
-#[allow(dead_code)] // coregistration module API
 pub struct RegistrationPipeline {
     /// Configuration
     config: RegistrationConfig,
@@ -585,7 +511,6 @@ pub struct RegistrationPipeline {
     progress: Arc<AtomicU32>,
 }
 
-#[allow(dead_code)] // coregistration module API
 impl RegistrationPipeline {
     pub fn new(config: RegistrationConfig) -> Self {
         Self {
@@ -962,7 +887,6 @@ fn trilinear_sample_u16(data: &[u16], dims: (usize, usize, usize), x: f64, y: f6
 }
 
 /// Build resolution pyramid (CPU version)
-#[allow(dead_code)] // coregistration pipeline internals
 fn build_pyramid(data: &[f32], dims: (usize, usize, usize), levels: usize) -> Vec<Vec<f32>> {
     let mut pyramid = Vec::with_capacity(levels);
 
@@ -988,7 +912,6 @@ fn build_pyramid(data: &[f32], dims: (usize, usize, usize), levels: usize) -> Ve
 }
 
 /// Downsample volume by 2x in each dimension (parallel version)
-#[allow(dead_code)] // coregistration pipeline internals
 fn downsample_parallel(
     data: &[f32],
     dims: (usize, usize, usize),
@@ -1104,7 +1027,6 @@ fn trilinear_sample(data: &[f32], dims: (usize, usize, usize), pos: super::trans
 }
 
 /// Get dimensions at pyramid level
-#[allow(dead_code)] // coregistration pipeline internals
 fn pyramid_dimensions(base: (usize, usize, usize), level: usize) -> (usize, usize, usize) {
     let divisor = 1 << level; // 2^level
     (

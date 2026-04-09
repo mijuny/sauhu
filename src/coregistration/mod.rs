@@ -21,6 +21,7 @@
 //! 4. Registration runs in background with progress indicator
 //! 5. Source viewport is updated with coregistered series
 #![allow(unused_imports)]
+#![allow(dead_code)]
 
 mod manager;
 mod metrics;

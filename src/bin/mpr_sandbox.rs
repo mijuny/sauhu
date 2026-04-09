@@ -1671,7 +1671,7 @@ fn cmd_coreg(args: &[String]) -> Result<()> {
 
     // Run coregistration
     println!("\nRunning coregistration...");
-    let config = RegistrationConfig::brain_mri();
+    let config = RegistrationConfig::detect(Some("MR"), Some("MR"));
     println!("  Metric: {:?}", config.metric);
     println!("  Schedule: {} levels", config.schedule.num_levels());
 
