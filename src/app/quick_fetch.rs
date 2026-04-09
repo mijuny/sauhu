@@ -551,6 +551,7 @@ impl SauhuApp {
     }
 
     /// Handle a completed series during retrieval
+    #[allow(clippy::too_many_arguments)]
     fn handle_series_complete(
         &mut self,
         series_uid: &str,

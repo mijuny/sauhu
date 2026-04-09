@@ -519,17 +519,17 @@ impl super::DatabaseWindow {
 
                     match retrieve_handle.join() {
                         Ok(Ok(path)) => {
-                            if !cancel_flag.load(Ordering::SeqCst) {
-                                if tx.send(RetrieveResult::Complete { path, study_info }).is_err() {
-                                    tracing::warn!("Retrieve channel closed before completion delivered");
-                                }
+                            if !cancel_flag.load(Ordering::SeqCst)
+                                && tx.send(RetrieveResult::Complete { path, study_info }).is_err()
+                            {
+                                tracing::warn!("Retrieve channel closed before completion delivered");
                             }
                         }
                         Ok(Err(e)) => {
-                            if !cancel_flag.load(Ordering::SeqCst) {
-                                if tx.send(RetrieveResult::Error(format!("{}", e))).is_err() {
-                                    tracing::warn!("Retrieve channel closed before error delivered");
-                                }
+                            if !cancel_flag.load(Ordering::SeqCst)
+                                && tx.send(RetrieveResult::Error(format!("{}", e))).is_err()
+                            {
+                                tracing::warn!("Retrieve channel closed before error delivered");
                             }
                         }
                         Err(_) => {

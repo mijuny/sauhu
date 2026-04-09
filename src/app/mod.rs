@@ -1595,24 +1595,22 @@ impl eframe::App for SauhuApp {
         let pointer_over_ui = ctx.is_pointer_over_area();
         ctx.input(|i| {
             let scroll = i.raw_scroll_delta.y;
-            if scroll != 0.0 && !pointer_over_ui {
-                if !i.modifiers.ctrl {
-                    // Normal scroll: navigate images
-                    let mouse_pos = i.pointer.hover_pos();
-                    let mouse_over_viewport = mouse_pos
-                        .map(|pos| {
-                            self.viewport_manager
-                                .get_active()
-                                .viewport
-                                .last_rect()
-                                .contains(pos)
-                        })
-                        .unwrap_or(false);
+            if scroll != 0.0 && !pointer_over_ui && !i.modifiers.ctrl {
+                // Normal scroll: navigate images
+                let mouse_pos = i.pointer.hover_pos();
+                let mouse_over_viewport = mouse_pos
+                    .map(|pos| {
+                        self.viewport_manager
+                            .get_active()
+                            .viewport
+                            .last_rect()
+                            .contains(pos)
+                    })
+                    .unwrap_or(false);
 
-                    if mouse_over_viewport {
-                        let delta = if scroll > 0.0 { -1 } else { 1 };
-                        self.navigate(delta);
-                    }
+                if mouse_over_viewport {
+                    let delta = if scroll > 0.0 { -1 } else { 1 };
+                    self.navigate(delta);
                 }
             }
         });

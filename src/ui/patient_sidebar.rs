@@ -392,7 +392,7 @@ impl PatientSidebar {
         let should_log = {
             let now = std::time::Instant::now();
             let mut last = LAST_LOG.lock().unwrap(); // Mutex poisoning = unrecoverable
-            if last.map_or(true, |t| now.duration_since(t).as_secs() >= 2) {
+            if last.is_none_or(|t| now.duration_since(t).as_secs() >= 2) {
                 *last = Some(now);
                 true
             } else {
