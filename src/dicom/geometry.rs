@@ -18,11 +18,6 @@ impl Vec3 {
         Self { x, y, z }
     }
 
-    #[allow(dead_code)]
-    pub fn from_array(arr: [f64; 3]) -> Self {
-        Self::new(arr[0], arr[1], arr[2])
-    }
-
     pub fn dot(&self, other: &Vec3) -> f64 {
         self.x * other.x + self.y * other.y + self.z * other.z
     }
@@ -134,17 +129,8 @@ impl ImagePlane {
         self.normal.dot(&other.normal).abs() > 0.99
     }
 
-    /// Get the physical size of the image in mm
-    #[allow(dead_code)]
-    pub fn physical_size(&self) -> (f64, f64) {
-        let width = self.dimensions.1 as f64 * self.pixel_spacing.1;
-        let height = self.dimensions.0 as f64 * self.pixel_spacing.0;
-        (width, height)
-    }
-
     /// Convert a 3D patient coordinate to 2D pixel coordinates on this plane
     /// Returns None if the point is not on the plane
-    #[allow(dead_code)]
     pub fn patient_to_pixel(&self, point: &Vec3) -> Point2D {
         // Vector from plane origin to point
         let v = point.sub(&self.position);

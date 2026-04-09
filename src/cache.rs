@@ -60,7 +60,7 @@ pub struct ImageCache {
 
 impl ImageCache {
     /// Create new cache with memory limit in bytes
-    #[allow(dead_code)] // cache API
+    #[allow(dead_code)]
     pub fn new(max_memory_bytes: usize) -> Self {
         Self::with_prefetch_window(max_memory_bytes, 5, 2)
     }
@@ -283,7 +283,7 @@ impl ImageCache {
     }
 
     /// Get cache statistics for debugging
-    #[allow(dead_code)] // cache API
+    #[allow(dead_code)]
     pub fn stats(&self) -> CacheStats {
         CacheStats {
             entries: self.entries.len(),
@@ -296,7 +296,7 @@ impl ImageCache {
 
 /// Cache statistics for debugging/monitoring
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // returned by ImageCache::stats()
+#[allow(dead_code)]
 pub struct CacheStats {
     pub entries: usize,
     pub memory_mb: usize,

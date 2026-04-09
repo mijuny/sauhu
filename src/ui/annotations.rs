@@ -45,7 +45,7 @@ impl std::fmt::Display for DistanceResult {
 #[derive(Debug, Clone)]
 pub struct LengthMeasurement {
     /// Unique ID for this measurement
-    #[allow(dead_code)] // used by annotation deletion (planned)
+    #[allow(dead_code)]
     pub id: u64,
     /// Start point in image coordinates
     pub start: AnnotationPoint,
@@ -85,7 +85,7 @@ impl ROIStatistics {
 #[derive(Debug, Clone)]
 pub struct CircleROI {
     /// Unique ID for this ROI
-    #[allow(dead_code)] // used by annotation deletion (planned)
+    #[allow(dead_code)]
     pub id: u64,
     /// Center point in image coordinates
     pub center: AnnotationPoint,
@@ -103,7 +103,7 @@ pub enum Annotation {
 }
 
 impl Annotation {
-    #[allow(dead_code)] // used by annotation deletion (planned)
+    #[allow(dead_code)]
     pub fn id(&self) -> u64 {
         match self {
             Annotation::Length(m) => m.id,
@@ -174,7 +174,7 @@ impl AnnotationStore {
     }
 
     /// Remove an annotation by ID
-    #[allow(dead_code)] // planned annotation management
+    #[allow(dead_code)]
     pub fn remove(&mut self, image_key: &str, annotation_id: u64) {
         if let Some(list) = self.annotations.get_mut(image_key) {
             list.retain(|a| a.id() != annotation_id);
@@ -191,12 +191,4 @@ impl AnnotationStore {
         self.annotations.clear();
     }
 
-    /// Check if an image has any annotations
-    #[allow(dead_code)] // planned annotation management
-    pub fn has_annotations(&self, image_key: &str) -> bool {
-        self.annotations
-            .get(image_key)
-            .map(|v| !v.is_empty())
-            .unwrap_or(false)
-    }
 }

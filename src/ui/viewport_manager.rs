@@ -80,7 +80,7 @@ pub struct ViewportSlot {
     pub series_name: String,
     pub sync_info: Option<SyncInfo>,
     /// GPU texture slot index
-    #[allow(dead_code)] // reserved for GPU texture management
+    #[allow(dead_code)]
     pub texture_slot: usize,
     /// MPR (Multi-Planar Reconstruction) state
     pub mpr_state: MprState,
@@ -112,17 +112,6 @@ impl ViewportSlot {
         self.series_files.get(self.current_index)
     }
 
-    #[allow(dead_code)]
-    pub fn image_count(&self) -> usize {
-        self.series_files.len()
-    }
-
-    /// Check if MPR mode is active
-    #[allow(dead_code)]
-    pub fn is_mpr_active(&self) -> bool {
-        self.mpr_state.is_active()
-    }
-
     /// Get current slice count (MPR or original)
     #[allow(dead_code)]
     pub fn slice_count(&self) -> usize {
@@ -133,15 +122,6 @@ impl ViewportSlot {
         }
     }
 
-    /// Get current slice index (MPR or original)
-    #[allow(dead_code)]
-    pub fn current_slice_index(&self) -> usize {
-        if self.mpr_state.is_active() {
-            self.mpr_state.slice_index
-        } else {
-            self.current_index
-        }
-    }
 
     /// Get a stable key for annotation storage on the current image.
     /// For regular DICOM: SOP Instance UID.
@@ -175,16 +155,6 @@ pub struct ViewportResponse {
     pub dropped_series: Option<DroppedSeries>,
 }
 
-impl ViewportResponse {
-    #[allow(dead_code)]
-    fn new() -> Self {
-        Self {
-            clicked: false,
-            hovered: false,
-            dropped_series: None,
-        }
-    }
-}
 
 /// Result from ViewportManager::show()
 pub struct ViewportShowResult {
@@ -213,9 +183,6 @@ pub struct ViewportManager {
     active_viewport: ViewportId,
     /// Whether synchronized scrolling is enabled
     sync_enabled: bool,
-    /// Whether GPU rendering is available
-    #[allow(dead_code)]
-    use_gpu: bool,
     /// Whether reference lines are enabled (on by default)
     reference_lines_enabled: bool,
     /// Coregistration visual state
@@ -234,7 +201,6 @@ impl ViewportManager {
             layout: ViewportLayout::Single,
             active_viewport: 0,
             sync_enabled: false,
-            use_gpu,
             reference_lines_enabled: true, // On by default
             coregistration_state: CoregistrationVisualState::default(),
         }
@@ -257,14 +223,6 @@ impl ViewportManager {
     /// Get active viewport ID
     pub fn active_viewport(&self) -> ViewportId {
         self.active_viewport
-    }
-
-    /// Set active viewport
-    #[allow(dead_code)]
-    pub fn set_active(&mut self, id: ViewportId) {
-        if id < self.layout.viewport_count() {
-            self.active_viewport = id;
-        }
     }
 
     /// Set coregistration visual state
@@ -1147,24 +1105,11 @@ impl ViewportManager {
         }
     }
 
-    /// Set sync enabled/disabled directly
-    #[allow(dead_code)]
-    pub fn set_sync_enabled(&mut self, enabled: bool) {
-        self.sync_enabled = enabled;
-    }
-
     /// Iterate over viewport slots (immutable)
     #[allow(dead_code)]
     pub fn slots(&self) -> impl Iterator<Item = &ViewportSlot> {
         let count = self.layout.viewport_count();
         self.slots[..count].iter()
-    }
-
-    /// Iterate over viewport slots (mutable)
-    #[allow(dead_code)]
-    pub fn slots_mut(&mut self) -> impl Iterator<Item = &mut ViewportSlot> {
-        let count = self.layout.viewport_count();
-        self.slots[..count].iter_mut()
     }
 }
 

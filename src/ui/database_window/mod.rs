@@ -24,7 +24,7 @@ use self::pacs_query::{QueryResult, RetrieveResult};
 
 /// Patient info aggregated from studies
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // planned patient grouping in database UI
+#[allow(dead_code)]
 pub struct PatientInfo {
     pub patient_id: String,
     pub patient_name: String,
@@ -176,20 +176,6 @@ impl DatabaseWindow {
         }
     }
 
-    /// Load local studies from database (blocking - use request_load_studies for async)
-    #[allow(dead_code)] // synchronous alternative to request_load_studies
-    pub fn load_local_studies(&mut self, conn: &Connection) {
-        match crate::db::get_all_studies_with_image_count(conn) {
-            Ok(studies) => {
-                self.local_studies = studies;
-            }
-            Err(e) => {
-                tracing::error!("Failed to load studies: {}", e);
-                self.local_studies = Vec::new();
-            }
-        }
-    }
-
     /// Request async loading of local studies (non-blocking)
     pub fn request_load_studies(&mut self) {
         self.loading_studies = true;
@@ -210,12 +196,6 @@ impl DatabaseWindow {
     pub fn handle_studies_loaded(&mut self, studies: Vec<StudyWithImages>) {
         self.local_studies = studies;
         self.loading_studies = false;
-    }
-
-    /// Whether studies are currently loading
-    #[allow(dead_code)] // public API for study loading state
-    pub fn is_loading_studies(&self) -> bool {
-        self.loading_studies
     }
 
     /// Take pending action (if any)

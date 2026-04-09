@@ -403,12 +403,6 @@ impl Viewport {
         }
     }
 
-    /// Check if GPU rendering is enabled
-    #[allow(dead_code)]
-    pub fn is_gpu_enabled(&self) -> bool {
-        self.use_gpu
-    }
-
     /// Set window center and width
     pub fn set_window(&mut self, center: f64, width: f64) {
         self.windowing.window_center = center;
@@ -474,7 +468,7 @@ impl Viewport {
 
     /// Show the viewport UI
     /// Returns series info if a series was dropped on this viewport
-    #[allow(dead_code)] // standalone show without reference lines
+    #[allow(dead_code)]
     pub fn show(&mut self, ui: &mut egui::Ui, mode: InteractionMode) -> Option<DroppedSeries> {
         // Clear texture graveyard - safe now that previous frame is complete
         self.texture_graveyard = None;

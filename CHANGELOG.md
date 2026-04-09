@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-04-08 -- Roadmap v4 Tier 1: dead code audit
+
+### Removed
+
+- **Dead code audit**: Reduced `#[allow(dead_code)]` from 138 to 65 annotations.
+  Deleted 28 truly unused items across 19 files (438 lines removed), including
+  unused GPU backwards-compatibility wrappers, unreachable config constructors,
+  stale database helpers, and unfinished series import logic. Coregistration module
+  gets a single `#![allow(dead_code)]` for its internal API (43 annotations removed).
+  Changed `sample_trilinear` to `#[cfg(test)]` since it is only used in tests.
+
 ## 2026-04-08 -- Roadmap v4 Tier 1: CI, clippy clean
 
 ### Added

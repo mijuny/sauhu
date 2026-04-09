@@ -346,15 +346,18 @@ pub fn anonymize_file(
 
 /// Information about an anonymized file
 #[derive(Debug)]
-#[allow(dead_code)]
 pub struct AnonymizedFileInfo {
+    #[allow(dead_code)]
     pub path: PathBuf,
     pub original_study_uid: String,
     pub new_study_uid: String,
     pub original_series_uid: String,
     pub new_series_uid: String,
+    #[allow(dead_code)]
     pub original_sop_uid: String,
+    #[allow(dead_code)]
     pub new_sop_uid: String,
+    #[allow(dead_code)]
     pub new_accession_number: String,
 }
 

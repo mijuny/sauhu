@@ -2,8 +2,8 @@
 
 use super::{DatabaseWindow, PatientInfo};
 use crate::db::{
-    get_next_anon_accession_number, get_next_anon_patient_number, insert_series, update_series_uid,
-    update_study_accession, update_study_after_anonymization, Series, Study,
+    get_next_anon_accession_number, get_next_anon_patient_number, update_series_uid,
+    update_study_accession, update_study_after_anonymization, Study,
 };
 use crate::dicom::{anonymize_patient, AnonymizeConfig, AnonymizeProgress, AnonymizeResult};
 use rusqlite::Connection;
@@ -51,7 +51,7 @@ pub(super) enum AnonymizeState {
         num_patients: usize,
     },
     /// Anonymization completed
-    #[allow(dead_code)] // completion state handling planned
+    #[allow(dead_code)]
     Complete {
         files_processed: u32,
         /// List of new patient names created
@@ -61,15 +61,6 @@ pub(super) enum AnonymizeState {
     Error { message: String },
 }
 
-#[allow(dead_code)] // used by import_series_from_path
-struct SeriesImportInfo {
-    series_instance_uid: String,
-    series_number: Option<i32>,
-    series_description: Option<String>,
-    modality: Option<String>,
-    body_part: Option<String>,
-    num_images: i32,
-}
 
 impl DatabaseWindow {
     /// Show anonymization confirmation dialog and progress
@@ -522,7 +513,7 @@ impl DatabaseWindow {
 }
 
 /// Group studies by patient
-#[allow(dead_code)] // planned patient grouping in database UI
+#[allow(dead_code)]
 pub fn group_studies_by_patient(studies: Vec<Study>) -> Vec<PatientInfo> {
     let mut patient_map: HashMap<String, PatientInfo> = HashMap::new();
 
@@ -559,114 +550,6 @@ pub fn group_studies_by_patient(studies: Vec<Study>) -> Vec<PatientInfo> {
     let mut patients: Vec<PatientInfo> = patient_map.into_values().collect();
     patients.sort_by(|a, b| a.patient_name.cmp(&b.patient_name));
     patients
-}
-
-/// Scan a directory for DICOM files and import series into the database
-#[allow(dead_code)] // planned series import functionality
-fn import_series_from_path(conn: &Connection, study_id: i64, path: &PathBuf, study_uid: &str) {
-    use dicom::dictionary_std::tags;
-    use dicom::object::open_file;
-
-    let mut series_map: HashMap<String, SeriesImportInfo> = HashMap::new();
-
-    let scan_dir = if path.is_dir()
-        && std::fs::read_dir(path)
-            .map(|mut d| d.next().is_some())
-            .unwrap_or(false)
-    {
-        path.clone()
-    } else if let Some(parent) = path.parent() {
-        parent.to_path_buf()
-    } else {
-        path.clone()
-    };
-
-    tracing::info!(
-        "Scanning for DICOM files in {:?} for study {}",
-        scan_dir,
-        study_uid
-    );
-
-    if let Ok(entries) = std::fs::read_dir(&scan_dir) {
-        for entry in entries.filter_map(|e| e.ok()) {
-            let file_path = entry.path();
-            if !file_path.is_file() {
-                continue;
-            }
-
-            if let Some(ext) = file_path.extension() {
-                if ext != "dcm" {
-                    continue;
-                }
-            }
-
-            if let Ok(obj) = open_file(&file_path) {
-                let file_study_uid = obj
-                    .element(tags::STUDY_INSTANCE_UID)
-                    .ok()
-                    .and_then(|e| e.to_str().ok())
-                    .map(|s| s.to_string())
-                    .unwrap_or_default();
-
-                if file_study_uid != study_uid {
-                    continue;
-                }
-
-                if let Some(series_uid) = obj
-                    .element(tags::SERIES_INSTANCE_UID)
-                    .ok()
-                    .and_then(|e| e.to_str().ok())
-                    .map(|s| s.to_string())
-                {
-                    let entry =
-                        series_map
-                            .entry(series_uid.clone())
-                            .or_insert_with(|| SeriesImportInfo {
-                                series_instance_uid: series_uid,
-                                series_number: obj
-                                    .element(tags::SERIES_NUMBER)
-                                    .ok()
-                                    .and_then(|e| e.to_int::<i32>().ok()),
-                                series_description: obj
-                                    .element(tags::SERIES_DESCRIPTION)
-                                    .ok()
-                                    .and_then(|e| e.to_str().ok())
-                                    .map(|s| s.to_string()),
-                                modality: obj
-                                    .element(tags::MODALITY)
-                                    .ok()
-                                    .and_then(|e| e.to_str().ok())
-                                    .map(|s| s.to_string()),
-                                body_part: obj
-                                    .element(tags::BODY_PART_EXAMINED)
-                                    .ok()
-                                    .and_then(|e| e.to_str().ok())
-                                    .map(|s| s.to_string()),
-                                num_images: 0,
-                            });
-                    entry.num_images += 1;
-                }
-            }
-        }
-    }
-
-    for (_uid, info) in series_map {
-        let series = Series {
-            id: 0,
-            study_id,
-            series_instance_uid: info.series_instance_uid,
-            series_number: info.series_number,
-            series_description: info.series_description,
-            modality: info.modality,
-            num_images: info.num_images,
-            body_part: info.body_part,
-            num_frames: 0,
-        };
-
-        if let Err(e) = insert_series(conn, &series) {
-            tracing::warn!("Failed to import series: {}", e);
-        }
-    }
 }
 
 /// Count DICOM files for a patient's studies

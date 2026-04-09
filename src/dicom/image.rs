@@ -492,40 +492,6 @@ impl DicomImage {
     }
 }
 
-/// Extract pixels via DynamicImage conversion (handles all formats)
-#[allow(dead_code)]
-fn extract_from_dynamic_image(
-    pixel_data: &dicom_pixeldata::DecodedPixelData,
-) -> Result<(Vec<u16>, f64, f64)> {
-    use image::DynamicImage;
-
-    let img = pixel_data
-        .to_dynamic_image(0)
-        .context("Failed to convert to DynamicImage")?;
-
-    // Try to preserve original bit depth - don't use to_luma16() which normalizes
-    let pixels: Vec<u16> = match &img {
-        DynamicImage::ImageLuma8(gray) => {
-            // 8-bit grayscale - scale to 16-bit
-            gray.pixels().map(|p| (p.0[0] as u16) << 8).collect()
-        }
-        DynamicImage::ImageLuma16(gray) => {
-            // 16-bit grayscale - use directly
-            gray.pixels().map(|p| p.0[0]).collect()
-        }
-        _ => {
-            // Color or other format - convert to luma16 (may normalize)
-            let gray = img.to_luma16();
-            gray.pixels().map(|p| p.0[0]).collect()
-        }
-    };
-
-    let min = *pixels.iter().min().unwrap_or(&0);
-    let max = *pixels.iter().max().unwrap_or(&65535);
-
-    Ok((pixels, min as f64, max as f64))
-}
-
 /// Extract raw pixels directly from DICOM object (bypasses decode_pixel_data)
 /// This is more reliable for uncompressed transfer syntaxes
 fn extract_raw_pixels_direct(
@@ -776,25 +742,6 @@ pub const CT_PRESETS: &[WindowPreset] = &[
         name: "Abdomen",
         center: 40.0,
         width: 400.0,
-    },
-];
-
-#[allow(dead_code)]
-pub const MR_PRESETS: &[WindowPreset] = &[
-    WindowPreset {
-        name: "T1",
-        center: 500.0,
-        width: 1000.0,
-    },
-    WindowPreset {
-        name: "T2",
-        center: 500.0,
-        width: 1000.0,
-    },
-    WindowPreset {
-        name: "FLAIR",
-        center: 500.0,
-        width: 1000.0,
     },
 ];
 

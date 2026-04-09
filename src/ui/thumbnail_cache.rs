@@ -135,12 +135,6 @@ impl ThumbnailCache {
         self.clear_pending = true;
     }
 
-    /// Check if a series has a cached thumbnail
-    #[allow(dead_code)]
-    pub fn has_thumbnail(&self, series_uid: &str) -> bool {
-        !self.clear_pending && self.thumbnails.contains_key(series_uid)
-    }
-
     /// Check if a series thumbnail is being loaded
     pub fn is_loading(&self, series_uid: &str) -> bool {
         !self.clear_pending && self.pending.contains(series_uid)

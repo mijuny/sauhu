@@ -514,8 +514,7 @@ impl Volume {
     }
 
     /// Trilinear interpolation for smooth sampling
-    #[inline]
-    #[allow(dead_code)]
+    #[cfg(test)]
     fn sample_trilinear(&self, x: f64, y: f64, z: f64) -> u16 {
         let (w, h, d) = self.dimensions;
 
@@ -1471,20 +1470,6 @@ impl MprState {
         }
     }
 
-    /// Generate and cache the full MPR series for the current plane
-    /// Returns the generated series for GPU upload
-    #[allow(dead_code)]
-    pub fn generate_series(&mut self) -> Option<Arc<MprSeries>> {
-        if let Some(vol) = &self.volume {
-            if let Some(series) = MprSeries::generate(vol, self.plane) {
-                let series_arc = Arc::new(series);
-                self.mpr_series = Some(series_arc.clone());
-                return Some(series_arc);
-            }
-        }
-        None
-    }
-
     /// Set pre-generated series (from async worker)
     pub fn set_series(&mut self, series: Arc<MprSeries>) {
         self.mpr_series = Some(series);
@@ -1498,29 +1483,11 @@ impl MprState {
             .unwrap_or(false)
     }
 
-    /// Get image at current slice index from pre-generated series
-    #[allow(dead_code)]
-    pub fn get_series_image(&self) -> Option<&Arc<DicomImage>> {
-        self.mpr_series
-            .as_ref()
-            .and_then(|s| s.images.get(self.slice_index))
-    }
-
     /// Get path for current slice (for GPU cache lookup)
     pub fn get_series_path(&self) -> Option<&std::path::PathBuf> {
         self.mpr_series
             .as_ref()
             .and_then(|s| s.paths.get(self.slice_index))
-    }
-
-    /// Navigate to a specific slice
-    #[allow(dead_code)]
-    pub fn set_slice(&mut self, index: usize) {
-        if let Some(vol) = &self.volume {
-            let max = vol.slice_count(self.plane).saturating_sub(1);
-            self.slice_index = index.min(max);
-            self.invalidate_cache();
-        }
     }
 
     /// Navigate relative to current slice

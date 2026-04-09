@@ -38,6 +38,7 @@ pub(super) enum MprRequest {
 pub(super) enum MprResult {
     /// Volume built successfully
     VolumeBuilt {
+        #[allow(dead_code)]
         viewport_id: ViewportId,
         volume: Arc<Volume>,
         generation: u64,
@@ -85,10 +86,9 @@ pub(super) struct MprGeneratingState {
 /// Phase of MPR generation
 pub(super) enum MprPhase {
     BuildingVolume,
+    #[allow(dead_code)]
     GeneratingSlices {
-        #[allow(dead_code)]
         completed: usize,
-        #[allow(dead_code)]
         total: usize,
     },
 }

@@ -123,16 +123,6 @@ impl SauhuApp {
         });
     }
 
-    /// Load folder to a specific viewport (async - for hanging protocol assignment)
-    #[allow(dead_code)]
-    pub(super) fn load_folder_to_viewport(&mut self, path: &PathBuf, viewport_id: ViewportId) {
-        self.status = format!("Scanning {:?}...", path);
-        let _ = self.background.request_tx.send(super::background::BackgroundRequest::ScanDirectory {
-            path: path.clone(),
-            context: ScanContext::LoadToViewport { viewport_id },
-        });
-    }
-
     /// Load a series from pre-sorted file list into the active viewport
     pub(super) fn load_series(&mut self, files: Vec<PathBuf>, name: &str, sync_info: Option<SyncInfo>) {
         self.load_series_to_viewport(

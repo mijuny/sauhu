@@ -174,12 +174,6 @@ impl PatientSidebar {
             .any(|s| s.study.id == study_id)
     }
 
-    /// Get number of studies in the sidebar
-    #[allow(dead_code)]
-    pub fn study_count(&self) -> usize {
-        self.studies_with_series.len()
-    }
-
     /// Add a study directly to the sidebar for incremental retrieval updates
     ///
     /// This bypasses the async loading and adds an empty study that will be

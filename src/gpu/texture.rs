@@ -5,9 +5,9 @@ use eframe::wgpu;
 use std::panic;
 
 /// GPU texture holding raw DICOM pixel data
-#[allow(dead_code)] // fields accessed via GPU bind groups, not Rust reads
 pub struct DicomTexture {
     /// The wgpu texture
+    #[allow(dead_code)]
     pub texture: wgpu::Texture,
     /// Texture view for binding
     pub view: wgpu::TextureView,
@@ -16,8 +16,10 @@ pub struct DicomTexture {
     /// Image height
     pub height: u32,
     /// Rescale slope for HU conversion
+    #[allow(dead_code)]
     pub rescale_slope: f32,
     /// Rescale intercept for HU conversion
+    #[allow(dead_code)]
     pub rescale_intercept: f32,
 }
 

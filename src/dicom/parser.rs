@@ -291,15 +291,6 @@ impl DicomFile {
             .unwrap_or(false)
     }
 
-    /// Get Bits Stored
-    #[allow(dead_code)]
-    pub fn bits_stored(&self) -> Option<u16> {
-        self.object
-            .element(dicom::dictionary_std::tags::BITS_STORED)
-            .ok()
-            .and_then(|e| e.to_int::<u16>().ok())
-    }
-
     /// Get Pixel Representation (0 = unsigned, 1 = signed)
     pub fn pixel_representation(&self) -> u16 {
         self.object

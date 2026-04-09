@@ -489,26 +489,6 @@ impl Settings {
         }
     }
 
-    /// Print current configuration summary
-    #[allow(dead_code)] // useful for CLI diagnostics
-    pub fn print_summary(&self) {
-        println!("Sauhu Configuration:");
-        println!(
-            "  Config file: {:?}",
-            Self::config_path().unwrap_or_default()
-        );
-        println!("  Local AE Title: {}", self.local.ae_title);
-        println!("  Local Port: {}", self.local.port);
-        println!("  Storage: {}", self.local.storage_path);
-        println!("  PACS Servers:");
-        for (id, server) in &self.pacs.servers {
-            println!(
-                "    [{}] {} @ {}:{}",
-                id, server.name, server.host, server.port
-            );
-        }
-    }
-
     /// Save settings to config file
     pub fn save(&self) -> Result<()> {
         let path = Self::config_path()?;

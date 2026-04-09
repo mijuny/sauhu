@@ -16,7 +16,7 @@ pub use schema::*;
 #[derive(Clone)]
 pub struct Database {
     conn: Arc<Mutex<Connection>>,
-    #[allow(dead_code)] // useful for diagnostics
+    #[allow(dead_code)]
     pub path: PathBuf,
 }
 
@@ -50,32 +50,6 @@ impl Database {
 
         let data_dir = proj_dirs.data_dir();
         Ok(data_dir.join("sauhu.db"))
-    }
-
-    /// Execute a database operation with the connection
-    #[allow(dead_code)] // part of DB API
-    pub fn with_conn<F, T>(&self, f: F) -> Result<T>
-    where
-        F: FnOnce(&Connection) -> Result<T>,
-    {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
-        f(&conn)
-    }
-
-    /// Execute a mutable database operation
-    #[allow(dead_code)] // part of DB API
-    pub fn with_conn_mut<F, T>(&self, f: F) -> Result<T>
-    where
-        F: FnOnce(&mut Connection) -> Result<T>,
-    {
-        let mut conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
-        f(&mut conn)
     }
 
     /// Get direct access to the connection (locks mutex)
