@@ -1036,3 +1036,162 @@ fn pyramid_dimensions(base: (usize, usize, usize), level: usize) -> (usize, usiz
     )
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dicom::{AcquisitionOrientation, Vec3 as DicomVec3};
+
+    /// Create a synthetic volume with a bright sphere at the given center
+    fn make_sphere_volume(
+        size: usize,
+        spacing: f64,
+        center: (f64, f64, f64),
+        radius: f64,
+    ) -> Volume {
+        let mut data = vec![0u16; size * size * size];
+        for z in 0..size {
+            for y in 0..size {
+                for x in 0..size {
+                    let dx = x as f64 - center.0;
+                    let dy = y as f64 - center.1;
+                    let dz = z as f64 - center.2;
+                    let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+                    if dist < radius {
+                        // Smooth falloff at edge
+                        let intensity = ((radius - dist) / radius * 1000.0) as u16;
+                        data[x + y * size + z * size * size] = intensity;
+                    }
+                }
+            }
+        }
+
+        Volume {
+            data,
+            dimensions: (size, size, size),
+            spacing: (spacing, spacing, spacing),
+            origin: DicomVec3::new(0.0, 0.0, 0.0),
+            row_direction: DicomVec3::new(1.0, 0.0, 0.0),
+            col_direction: DicomVec3::new(0.0, 1.0, 0.0),
+            slice_direction: DicomVec3::new(0.0, 0.0, 1.0),
+            rescale_slope: 1.0,
+            rescale_intercept: 0.0,
+            modality: Some("MR".to_string()),
+            series_description: Some("Test".to_string()),
+            acquisition_orientation: AcquisitionOrientation::Axial,
+            frame_of_reference_uid: None,
+            study_instance_uid: None,
+            default_window_center: 500.0,
+            default_window_width: 1000.0,
+            patient_name: None,
+            patient_id: None,
+            patient_age: None,
+            patient_sex: None,
+            study_date: None,
+            study_description: None,
+            original_slice_positions: vec![],
+            pixel_representation: 0,
+        }
+    }
+
+    #[test]
+    fn test_identity_registration() {
+        // Registering a volume to itself should produce near-identity transform
+        let vol = make_sphere_volume(32, 1.0, (16.0, 16.0, 16.0), 8.0);
+        let config = RegistrationConfig::detect(Some("MR"), Some("MR"));
+        let pipeline = RegistrationPipeline::new(config);
+
+        let result = pipeline.run_cpu(&vol, &vol);
+
+        match result {
+            RegistrationResult::Success { transform, metric, .. } => {
+                assert!(metric > 0.95, "Identity metric should be near 1.0, got {:.4}", metric);
+                assert!(transform.translation_x.abs() < 2.0, "Translation X should be ~0, got {:.2}", transform.translation_x);
+                assert!(transform.translation_y.abs() < 2.0, "Translation Y should be ~0, got {:.2}", transform.translation_y);
+                assert!(transform.translation_z.abs() < 2.0, "Translation Z should be ~0, got {:.2}", transform.translation_z);
+            }
+            RegistrationResult::Failed { error, .. } => panic!("Registration failed: {}", error),
+            RegistrationResult::Cancelled => panic!("Registration cancelled"),
+        }
+    }
+
+    #[test]
+    fn test_translation_recovery() {
+        // Source sphere shifted by (3, 2, 1) voxels. Pipeline should recover this.
+        let target = make_sphere_volume(32, 1.0, (16.0, 16.0, 16.0), 8.0);
+        let source = make_sphere_volume(32, 1.0, (19.0, 18.0, 17.0), 8.0);
+
+        let config = RegistrationConfig::detect(Some("MR"), Some("MR"));
+        let pipeline = RegistrationPipeline::new(config);
+
+        let result = pipeline.run_cpu(&target, &source);
+
+        match result {
+            RegistrationResult::Success { transform, metric, .. } => {
+                // Should find reasonable alignment (metric improvement)
+                assert!(metric > 0.5, "Metric should improve, got {:.4}", metric);
+                // Translation should be approximately (-3, -2, -1) to move source back
+                // Use generous tolerance since 32^3 is coarse
+                let total_shift = (transform.translation_x.powi(2)
+                    + transform.translation_y.powi(2)
+                    + transform.translation_z.powi(2))
+                .sqrt();
+                assert!(total_shift > 0.5, "Should detect non-zero translation, got {:.2}", total_shift);
+                assert!(total_shift < 10.0, "Translation should be reasonable, got {:.2}", total_shift);
+            }
+            RegistrationResult::Failed { error, .. } => panic!("Registration failed: {}", error),
+            RegistrationResult::Cancelled => panic!("Registration cancelled"),
+        }
+    }
+
+    #[test]
+    fn test_cancellation() {
+        let vol = make_sphere_volume(32, 1.0, (16.0, 16.0, 16.0), 8.0);
+        let config = RegistrationConfig::detect(Some("MR"), Some("MR"));
+        let pipeline = RegistrationPipeline::new(config);
+
+        // Set cancel flag before running
+        pipeline.cancel_flag().store(true, Ordering::Relaxed);
+
+        let result = pipeline.run_cpu(&vol, &vol);
+        assert!(matches!(result, RegistrationResult::Cancelled));
+    }
+
+    #[test]
+    fn test_pyramid_dimensions() {
+        assert_eq!(pyramid_dimensions((128, 128, 64), 0), (128, 128, 64));
+        assert_eq!(pyramid_dimensions((128, 128, 64), 1), (64, 64, 32));
+        assert_eq!(pyramid_dimensions((128, 128, 64), 2), (32, 32, 16));
+        assert_eq!(pyramid_dimensions((128, 128, 64), 3), (16, 16, 8));
+    }
+
+    #[test]
+    fn test_build_pyramid() {
+        // 16^3 volume, 2 levels should produce [16^3, 8^3]
+        let data: Vec<f32> = (0..16 * 16 * 16).map(|i| i as f32 / 4096.0).collect();
+        let pyramid = build_pyramid(&data, (16, 16, 16), 2);
+        assert_eq!(pyramid.len(), 2);
+        assert_eq!(pyramid[0].len(), 16 * 16 * 16);
+        assert_eq!(pyramid[1].len(), 8 * 8 * 8);
+    }
+
+    #[test]
+    fn test_preprocess_preserves_structure() {
+        // MRI preprocessing should normalize to [0, 1] range
+        let vol = make_sphere_volume(16, 1.0, (8.0, 8.0, 8.0), 5.0);
+        let config = RegistrationConfig::detect(Some("MR"), Some("MR"));
+        let pipeline = RegistrationPipeline::new(config);
+
+        let preprocessed = pipeline.preprocess_volume(&vol, Modality::Mri);
+
+        assert_eq!(preprocessed.len(), vol.data.len());
+        let max = preprocessed.iter().cloned().fold(0.0f32, f32::max);
+        let min = preprocessed.iter().cloned().fold(f32::MAX, f32::min);
+        assert!(max <= 1.0, "Max should be <= 1.0, got {}", max);
+        assert!(min >= 0.0, "Min should be >= 0.0, got {}", min);
+        // Sphere center should be brighter than edge
+        let center_idx = 8 + 8 * 16 + 8 * 16 * 16;
+        let edge_idx = 0;
+        assert!(preprocessed[center_idx] > preprocessed[edge_idx]);
+    }
+}
+
