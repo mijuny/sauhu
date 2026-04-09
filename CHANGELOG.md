@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-04-08 -- Roadmap v4 Tier 1: CI, clippy clean
+
+### Added
+
+- **CI**: GitHub Actions workflow runs `cargo test --workspace --lib` and
+  `cargo clippy --workspace -- -D warnings` on every push and pull request.
+
+### Fixed
+
+- **Clippy clean**: Fixed all 5 remaining clippy warnings:
+  - Collapsed 3 nested `if` statements (`app/mod.rs`, `pacs_query.rs` x2)
+  - Replaced `map_or(true, ...)` with `is_none_or(...)` (`patient_sidebar.rs`)
+  - Suppressed `too_many_arguments` on private method (`quick_fetch.rs`)
+
 ## 2026-04-08 -- Roadmap Tier 1-2: ImagePixels struct, fusion removal, cleanup
 
 ### Changed

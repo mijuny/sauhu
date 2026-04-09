@@ -158,6 +158,16 @@
 
 ---
 
+## CI
+
+GitHub Actions runs on every push and pull request:
+- `cargo test --workspace --lib` (108 tests, ~20ms)
+- `cargo clippy --workspace -- -D warnings`
+
+Workflow file: `.github/workflows/ci.yml`
+
+---
+
 ## Technical Decisions
 
 ### Why Transfer Syntax-Based Extraction?
