@@ -111,11 +111,13 @@ impl SauhuApp {
                         match Volume::from_series(&images) {
                             Some(vol) => {
                                 tracing::info!("MPR worker: volume built successfully");
-                                let _ = result_tx.send(MprResult::VolumeBuilt {
+                                if result_tx.send(MprResult::VolumeBuilt {
                                     viewport_id,
                                     volume: Arc::new(vol),
                                     generation,
-                                });
+                                }).is_err() {
+                                    tracing::warn!("MPR result channel closed before volume delivered");
+                                }
                             }
                             None => {
                                 if result_tx.send(MprResult::VolumeFailed {
@@ -148,12 +150,14 @@ impl SauhuApp {
                         match MprSeries::generate(&volume, plane) {
                             Some(series) => {
                                 tracing::info!("MPR worker: generated {} slices", series.len());
-                                let _ = result_tx.send(MprResult::SeriesGenerated {
+                                if result_tx.send(MprResult::SeriesGenerated {
                                     viewport_id,
                                     plane,
                                     series: Arc::new(series),
                                     generation,
-                                });
+                                }).is_err() {
+                                    tracing::warn!("MPR result channel closed before series delivered");
+                                }
                             }
                             None => {
                                 if result_tx.send(MprResult::SeriesFailed {

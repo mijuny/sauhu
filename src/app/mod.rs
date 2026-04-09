@@ -128,7 +128,9 @@ impl SauhuApp {
                         viewport_id,
                         generation,
                     });
-                let _ = result_tx.send(result);
+                if result_tx.send(result).is_err() {
+                    tracing::warn!("Image load result channel closed");
+                }
             }
         });
 

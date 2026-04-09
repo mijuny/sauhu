@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-04-08 -- Roadmap v4 Tier 3: silent discard audit
+
+### Changed
+
+- **`let _ =` audit**: Added `tracing::warn` logging to 4 result-carrying
+  channel sends that were silently discarding failures: MPR volume/series
+  delivery, image load results, and quick fetch query completion.
+  Left progress updates and cancel/shutdown signals as fire-and-forget.
+
 ## 2026-04-08 -- Rename mpr_sandbox to sauhu-agent-cli
 
 ### Changed

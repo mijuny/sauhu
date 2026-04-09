@@ -212,12 +212,14 @@ impl SauhuApp {
                         accession_number: study.accession_number.clone(),
                     };
 
-                    let _ = tx.send(QuickFetchResult::QueryComplete {
+                    if tx.send(QuickFetchResult::QueryComplete {
                         accession: accession.clone(),
                         study_uid: study_uid.clone(),
                         description: description.clone(),
                         study_info: study_info.clone(),
-                    });
+                    }).is_err() {
+                        tracing::warn!("Quick fetch channel closed before query result delivered");
+                    }
 
                     // Start SCP and retrieve using parallel retriever
                     let scp = DicomScp::new(&our_ae_title, scp_port, storage_path.clone());
