@@ -76,8 +76,8 @@ name = "pacs_test"
 path = "src/bin/pacs_test.rs"
 
 [[bin]]
-name = "mpr_sandbox"
-path = "src/bin/mpr_sandbox.rs"
+name = "sauhu-agent-cli"
+path = "src/bin/sauhu_agent_cli.rs"
 
 [profile.release]
 opt-level = 3

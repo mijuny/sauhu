@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-04-08 -- Rename mpr_sandbox to sauhu-agent-cli
+
+### Changed
+
+- **Renamed** `mpr_sandbox` (2,554 lines) to `sauhu-agent-cli` (1,036 lines).
+  CLI tool for AI agents to inspect DICOM/MPR output via PNG rendering.
+
+### Removed
+
+- **Deleted commands**: `coreg-gpu` (reimplemented coregistration internals),
+  `coreg` (CPU coreg), `compare` (subset of view), `sync` (subset of point).
+- **Deleted duplicated functions**: `preprocess_volume_mri`, `downsample_volume`,
+  `find_closest_slice_by_location` (all exist in the library).
+
+### Kept
+
+- 6 commands: `view`, `point`, `roi`, `measure`, `info`, `debug`
+- Software PNG renderer (no library equivalent, app uses GPU shaders)
+
 ## 2026-04-08 -- Roadmap v4 Tier 1: dead code audit
 
 ### Removed
