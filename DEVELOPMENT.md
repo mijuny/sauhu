@@ -1,218 +1,169 @@
 # Sauhu Development Status
 
-## Current Version: 0.1.0-alpha
+## Current Version: 0.2.0
 
-## Completed Features
+## Codebase
 
-### Phase 1: Core Viewer (COMPLETE except 1.1)
+~20,000 lines of Rust across two crates (`sauhu` and `sauhu-common`), 117 tests.
 
-#### DICOM Parsing & Loading
-- [x] DICOM file parsing with dicom-rs
-- [x] Metadata extraction (patient, study, series info)
-- [x] Transfer syntax detection
-- [x] Drag & drop loading
-- [x] Folder scanning
+## Implemented Features
 
-#### Pixel Data Extraction
-- [x] Uncompressed formats (Implicit/Explicit VR, LE/BE)
-- [x] JPEG 2000 via OpenJPEG
-- [x] JPEG Baseline/Lossless
-- [x] JPEG-LS via CharLS
-- [x] Proper HU handling for uncompressed CT
-- [x] Auto-detection of pre-normalized data
-- [x] Fallback handling for edge cases
+### DICOM Parsing & Loading
+- DICOM file parsing with dicom-rs
+- Metadata extraction (patient, study, series info)
+- Transfer syntax detection (Implicit/Explicit VR, LE/BE)
+- Compressed formats: JPEG 2000, JPEG Baseline/Lossless, JPEG-LS
+- HU handling for CT, auto-detection of pre-normalized data
+- Drag & drop loading, folder scanning
 
-#### Window/Level
-- [x] Mouse-based adjustment (Shift+drag, right-click drag)
-- [x] CT presets (keys 1-9)
-- [x] Auto-optimal windowing (key 0)
-- [x] Sensitivity scaling based on window width
+### GPU-Accelerated Rendering
+- wgpu-based rendering pipeline (Vulkan/Metal/DX12)
+- Raw pixel data uploaded as GPU texture once
+- Window/level applied in fragment shader (no per-frame CPU work)
+- Mouse-based W/L adjustment (Shift+drag, right-click drag)
+- CT presets (keys 1-9), auto-optimal windowing (key 0)
 
-#### Navigation & Display
-- [x] Series navigation (arrows, scroll)
-- [x] Zoom (Ctrl+drag, scroll wheel)
-- [x] Pan (left-drag, middle-drag)
-- [x] Fit to window (Space)
-- [x] 1:1 pixel display
+### Multi-Viewport & Synchronization
+- Dynamic viewport layouts (1x1, 1x2, 2x2, NxM)
+- Tab-based workspace management
+- Drag & drop series to viewports
+- Scroll sync by frame of reference
+- Cross-series reference lines (geometry-based and index-based)
+- Viewport maximize/restore
 
-#### Infrastructure
-- [x] SQLite database for persistence
-- [x] Configuration system
-- [x] Logging with tracing
+### MPR (Multi-Planar Reconstruction)
+- Volume loading from 3D DICOM series
+- Axial, coronal, sagittal slice generation
+- Gantry tilt correction
+- MPR-to-original sync with correct center position
+- Reference lines across MPR planes
 
----
+### PACS Connectivity
+- C-FIND (query by patient, study, date, modality)
+- C-MOVE (retrieve to local storage)
+- C-STORE (send studies)
+- PACS configuration UI
+- Parallel retriever (4 workers)
+- Quick fetch (Ctrl+G)
+- Mixed-modality study handling (filters non-image objects)
 
-## Phase 1.1: GPU-Accelerated Windowing (NEXT)
+### Coregistration
+- Automatic intensity-based registration
+- Mutual information algorithm
+- GPU-accelerated computation
+- Transform matrix storage
+- Visual progress feedback
+- 16 pipeline tests on synthetic volumes
 
-**Problem**: Large images (e.g., 1841x1955 CR) cause lag during windowing because we:
-1. Process 3.6M pixels on CPU
-2. Allocate 14MB per frame
-3. Upload 14MB to GPU each frame
+### Other
+- SQLite database for study/series persistence
+- TOML configuration system
+- Anonymization (patient data stripping)
+- Measurement tools (distance, ROI)
+- Annotations
+- Hanging protocols
+- IPC server (single-instance, open files from CLI)
+- Anonymous viewing mode (Ctrl+H)
+- O(1) LRU image cache with `IndexMap`
 
-**Solution**: GPU-based windowing
-- Upload raw u16 pixel data to GPU once
-- Apply window/level in fragment shader
-- Only update shader uniforms during drag
-
-### Implementation Plan
-
-1. **Add wgpu dependency**
-   - Already in project plan
-   - Will provide Vulkan/Metal/DX12 abstraction
-
-2. **Create GPU texture from raw pixels**
-   - Upload DicomImage.pixels as R16_UINT texture
-   - Store rescale_slope/intercept as uniforms
-
-3. **Write window/level shader**
-   ```wgsl
-   // Fragment shader pseudocode
-   @fragment
-   fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
-       let pixel = textureSample(dicom_texture, sampler, uv).r;
-       let hu = pixel * rescale_slope + rescale_intercept;
-       let normalized = clamp((hu - wc + ww/2) / ww, 0.0, 1.0);
-       return vec4<f32>(normalized, normalized, normalized, 1.0);
-   }
-   ```
-
-4. **Integrate with egui**
-   - Use egui's custom painting or texture callback
-   - Update uniforms (WC, WW) on drag
-   - No texture re-upload during windowing
-
-### Expected Performance
-- Initial load: Same (one-time texture upload)
-- Windowing: 60+ FPS (only uniform updates)
-- Memory: Reduced (no per-frame allocations)
-
----
-
-## Phase 2: PACS Connectivity
-
-### Features
-- [ ] C-FIND (Query by patient, study, date, modality)
-- [ ] C-MOVE (Retrieve to local storage)
-- [ ] C-STORE (Send studies)
-- [ ] PACS configuration UI
-- [ ] Worklist view
-- [ ] Background download with progress
-
-### Implementation
-- Use dicom-ul crate for DICOM networking
-- Async operations with tokio
-- Local cache in SQLite
-
----
-
-## Phase 3: Multi-Viewport & Synchronization
-
-### Features
-- [ ] Dynamic viewport layouts (1x1, 1x2, 2x2, NxM)
-- [ ] Tab-based workspace management
-- [ ] Split viewport horizontal/vertical
-- [ ] Drag & drop series to viewports
-- [ ] Viewport synchronization (scroll sync by frame of reference)
-- [ ] Sync groups & toggle per viewport
-- [ ] Viewport maximize/restore
-- [ ] Multi-monitor: detachable windows
-
-### Implementation
-- Use egui_tiles for dynamic tiling
-- Synchronization manager for linked scrolling
-- Ring buffer preload per viewport
-
----
-
-## Phase 4: Smart Windowing
-
-### Features
-- [ ] Histogram-based auto-optimal WL
-- [ ] ROI-based windowing (draw region -> optimize WL)
-- [ ] Modality-aware defaults
-
----
-
-## Phase 5: Measurements
-
-### Features
-- [ ] Distance measurement (line)
-- [ ] Area (ellipse, rectangle, freehand)
-- [ ] ROI statistics (mean, std, min, max HU)
-- [ ] Angle measurements (Cobb, open angle)
-- [ ] Measurement persistence in SQLite
-
-### Implementation
-- Trait-based tool system for extensibility
-- Overlay rendering on viewport
-
----
-
-## Phase 6: Co-registration
-
-### Features
-- [ ] Automatic intensity-based registration
-- [ ] Mutual information algorithm
-- [ ] Transform matrix storage
-- [ ] Visual progress feedback
-
----
-
-## CI
-
-GitHub Actions runs on every push and pull request:
-- `cargo test --workspace --lib` (108 tests, ~20ms)
-- `cargo clippy --workspace -- -D warnings`
-
-Workflow file: `.github/workflows/ci.yml`
-
----
-
-## Technical Decisions
-
-### Why Transfer Syntax-Based Extraction?
-CT images need raw pixel values for proper HU calculation. Compressed images get normalized by decoders. Solution: detect transfer syntax and use appropriate extraction path.
-
-### Why GPU Windowing?
-Professional DICOM viewers (UkkO, etc.) use GPU for windowing. CPU-based processing can't handle large images (3-4 megapixels) at interactive framerates.
-
-### Why egui?
-- Immediate mode simplicity
-- Native Wayland support
-- Good enough performance for UI
-- Easy to extend with custom rendering
-
----
-
-## File Structure
+## Architecture
 
 ```
 src/
-├── main.rs              # Entry point, eframe setup
-├── app.rs               # Main application state, event handling
-├── config.rs            # TOML configuration
-├── dicom/
-│   ├── mod.rs           # Module exports
-│   ├── parser.rs        # DICOM file reading, metadata
-│   └── image.rs         # Pixel extraction, windowing
-├── ui/
-│   ├── mod.rs
-│   └── viewport.rs      # Image display, interaction
-└── db/
-    ├── mod.rs           # Database connection
-    └── schema.rs        # Tables, migrations
+├── main.rs                    # Entry point, eframe setup
+├── app/                       # Application state (decomposed into subsystems)
+│   ├── mod.rs                 # SauhuApp, event handling
+│   ├── background.rs          # DB queries, directory scans, image cache
+│   ├── coregistration.rs      # Coregistration UI integration
+│   ├── image_loading.rs       # Async file loading thread
+│   ├── interaction.rs         # Mouse interaction, measurements
+│   ├── mpr.rs                 # MPR pipeline management
+│   └── quick_fetch.rs         # Ctrl+G PACS retrieve
+├── cache.rs                   # Image cache
+├── config.rs                  # TOML configuration
+├── coregistration/            # Intensity-based coregistration
+│   ├── manager.rs             # Registration orchestration
+│   ├── metrics.rs             # Mutual information, NCC
+│   ├── optimizer.rs           # Powell optimizer
+│   ├── pipeline.rs            # Multi-resolution pipeline
+│   └── transform.rs           # Affine transforms
+├── db/                        # SQLite persistence
+│   ├── mod.rs                 # Database connection
+│   └── schema.rs              # Tables, migrations
+├── dicom/                     # DICOM parsing & processing
+│   ├── anonymize.rs           # Patient data stripping
+│   ├── geometry.rs            # Geometric calculations
+│   ├── image.rs               # Pixel extraction, windowing
+│   ├── mpr/                   # Multi-planar reconstruction
+│   ├── parser.rs              # DICOM file reading
+│   ├── series_utils.rs        # Series grouping, slice location
+│   └── spatial.rs             # Spatial calculations
+├── gpu/                       # GPU rendering
+│   ├── renderer.rs            # wgpu render pipeline
+│   ├── texture.rs             # GPU texture management
+│   ├── coregistration.rs      # GPU coregistration compute
+│   └── shaders/               # WGSL shaders
+├── hanging_protocol.rs        # Display protocol rules
+├── ipc.rs                     # Single-instance IPC
+├── pacs/                      # Re-exports sauhu-common PACS
+│   └── mod.rs
+└── ui/                        # User interface
+    ├── annotations.rs         # Measurement/annotation overlay
+    ├── database_window/       # PACS query/retrieve UI
+    │   ├── local_browser.rs   # Local study browser
+    │   ├── pacs_query.rs      # PACS search UI
+    │   └── anonymize.rs       # Anonymization UI
+    ├── patient_sidebar.rs     # Patient/study/series tree
+    ├── thumbnail_cache.rs     # Series thumbnail generation
+    ├── viewport.rs            # Single viewport rendering
+    └── viewport_manager.rs    # Multi-viewport layout & sync
+
+sauhu-common/src/              # Shared crate
+├── lib.rs
+└── pacs/                      # DICOM networking
+    ├── query.rs               # C-FIND
+    ├── retrieve.rs            # C-MOVE orchestration
+    ├── scp.rs                 # Storage SCP (receiver)
+    └── scu.rs                 # Service class user (sender)
 ```
 
----
+### Binaries
 
-## Testing
+| Name | Purpose |
+|------|---------|
+| `sauhu` | Main DICOM viewer |
+| `sauhu-agent-cli` | CLI for AI agents to inspect DICOM output (6 commands: view, point, roi, measure, info, debug) |
+| `dicom_test` | DICOM parsing test harness |
+| `pacs_test` | PACS connectivity test |
 
-### Test Files
-- [pydicom test files](https://github.com/pydicom/pydicom/tree/main/tests/data) - 116 DICOM test files
-- CT_small.dcm - Uncompressed CT (HU testing)
-- 693_J2KI.dcm - JPEG 2000 CT
-- RG1_UNCI.dcm - CR chest X-ray (large, MONOCHROME1)
+## CI
 
-### Current Test Results
-- 103/116 files load successfully
-- Failures: Non-image DICOM (SR, RT Plan), edge cases (32-bit RLE)
+GitHub Actions on every push and pull request:
+
+- `cargo test --workspace --lib` (117 tests, <1s)
+- `cargo clippy --workspace -- -D warnings`
+
+Workflow: `.github/workflows/ci.yml`
+
+## Key Dependencies
+
+| Category | Crates |
+|----------|--------|
+| UI | eframe 0.29, egui 0.29 |
+| GPU | wgpu 22 |
+| DICOM | dicom 0.9, dicom-pixeldata 0.9, dicom-ul 0.9 |
+| Database | rusqlite 0.32 (bundled) |
+| Async | tokio 1 |
+| Image | image 0.25, rayon 1.10 |
+
+## Build
+
+```bash
+cargo build --release           # Build release
+cargo run --release             # Run viewer
+cargo run --release --bin sauhu-agent-cli -- --help  # Agent CLI
+cargo test --workspace --lib    # Run tests
+cargo clippy --workspace -- -D warnings  # Lint
+```
+
+Release profile: `opt-level=3`, `lto=true`, `codegen-units=1`
