@@ -199,7 +199,7 @@ impl CoregistrationManager {
 
             // Check for cancellation
             if task_cancel.load(Ordering::Relaxed) {
-                let mut result_lock = task_result.lock().unwrap();
+                let mut result_lock = task_result.lock().expect("coregistration result mutex poisoned");
                 *result_lock = Some(RegistrationResult::Cancelled);
                 return;
             }
@@ -220,7 +220,7 @@ impl CoregistrationManager {
             {
                 Some(a) => a,
                 None => {
-                    let mut result_lock = task_result.lock().unwrap();
+                    let mut result_lock = task_result.lock().expect("coregistration result mutex poisoned");
                     *result_lock = Some(RegistrationResult::Failed {
                         error: "Failed to find GPU adapter".to_string(),
                         partial_transform: None,
@@ -243,7 +243,7 @@ impl CoregistrationManager {
             {
                 Ok(dq) => dq,
                 Err(e) => {
-                    let mut result_lock = task_result.lock().unwrap();
+                    let mut result_lock = task_result.lock().expect("coregistration result mutex poisoned");
                     *result_lock = Some(RegistrationResult::Failed {
                         error: format!("Failed to create GPU device: {}", e),
                         partial_transform: None,
@@ -261,7 +261,7 @@ impl CoregistrationManager {
             task_progress.store(30, Ordering::Relaxed);
 
             if task_cancel.load(Ordering::Relaxed) {
-                let mut result_lock = task_result.lock().unwrap();
+                let mut result_lock = task_result.lock().expect("coregistration result mutex poisoned");
                 *result_lock = Some(RegistrationResult::Cancelled);
                 return;
             }
@@ -320,7 +320,7 @@ impl CoregistrationManager {
             task_progress.store(40, Ordering::Relaxed);
 
             if task_cancel.load(Ordering::Relaxed) {
-                let mut result_lock = task_result.lock().unwrap();
+                let mut result_lock = task_result.lock().expect("coregistration result mutex poisoned");
                 *result_lock = Some(RegistrationResult::Cancelled);
                 return;
             }
@@ -361,7 +361,7 @@ impl CoregistrationManager {
             task_progress.store(65, Ordering::Relaxed);
 
             if task_cancel.load(Ordering::Relaxed) {
-                let mut result_lock = task_result.lock().unwrap();
+                let mut result_lock = task_result.lock().expect("coregistration result mutex poisoned");
                 *result_lock = Some(RegistrationResult::Cancelled);
                 return;
             }
@@ -409,7 +409,7 @@ impl CoregistrationManager {
             );
 
             // Store result
-            let mut result_lock = task_result.lock().unwrap();
+            let mut result_lock = task_result.lock().expect("coregistration result mutex poisoned");
             *result_lock = Some(RegistrationResult::Success {
                 transform,
                 metric: level3_result.metric,
