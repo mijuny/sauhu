@@ -1,6 +1,6 @@
 # Sauhu: Roadmap to 10/10
 
-After the third ThePrimeagen x DHH review (9.0/10), these are the items that close the remaining gap.
+After the third code review (9.0/10), these are the items that close the remaining gap.
 
 Previous review items (8.5 -> 9.0): all 10 completed. Named tuples, channel logging, dead code cleanup, database_window split, 72 new tests, VolumeUpload/GridContext structs, consistent error types, GPU resilience, unsafe docs.
 

@@ -507,7 +507,7 @@ Sauhu is built on excellent open source libraries:
 And to the desktop environment that made building this worthwhile:
 
 - [Hyprland](https://hyprland.org) by Vaxry - the Wayland compositor that makes Linux a viable daily-driver workstation
-- [Omarchy](https://omarchy.com) by DHH et al. - the opinionated Arch desktop that ties it all together
+- [Omarchy](https://omarchy.com) - the opinionated Arch desktop that ties it all together
 
 Thank you to all contributors and maintainers, and to the countless open source contributors whose work makes projects like this possible.
 

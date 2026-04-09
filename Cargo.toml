@@ -3,7 +3,7 @@ members = ["sauhu-common"]
 
 [package]
 name = "sauhu"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Mikko <mikko@liekki.xyz>"]
 description = "Lightning-fast DICOM viewer for Linux"
