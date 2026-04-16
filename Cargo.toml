@@ -10,6 +10,15 @@ description = "Lightning-fast DICOM viewer for Linux"
 license = "PolyForm-Noncommercial-1.0.0"
 default-run = "sauhu"
 
+# Feature gates for pixel-data decoders. Default matches the prior build
+# behaviour (both JPEG2000 and CharLS enabled); a smaller build can opt out
+# with `cargo build --release --no-default-features` to drop ~2-3 MB of C/C++
+# decoder code.
+[features]
+default = ["codec-jpeg2k", "codec-charls"]
+codec-jpeg2k = ["dicom-pixeldata/openjp2"]
+codec-charls = ["dicom-pixeldata/charls"]
+
 [dependencies]
 # Workspace
 sauhu-common = { path = "sauhu-common" }
@@ -22,7 +31,6 @@ eframe = { version = "0.29", default-features = false, features = [
     "x11",
 ] }
 egui = "0.29"
-egui_extras = { version = "0.29", features = ["image"] }
 
 # GPU (use eframe's wgpu re-export for compatibility)
 bytemuck = { version = "1.14", features = ["derive"] }
@@ -31,15 +39,12 @@ pollster = "0.4"
 
 # DICOM
 dicom = "0.9"
-dicom-pixeldata = { version = "0.9", features = ["image", "native", "openjp2", "charls"] }
+dicom-pixeldata = { version = "0.9", default-features = false, features = ["image", "native"] }
 dicom-dictionary-std = "0.9"
 dicom-ul = "0.9"  # DICOM Upper Layer protocol (C-FIND, C-MOVE, C-STORE)
 
 # Database
 rusqlite = { version = "0.32", features = ["bundled"] }
-
-# Async
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "fs"] }
 
 # Image processing
 image = "0.25"
