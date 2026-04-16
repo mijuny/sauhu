@@ -32,6 +32,19 @@ impl Database {
 
         let conn = Connection::open(&path)?;
 
+        // Tune SQLite for mixed UI + background writer workload:
+        // WAL removes the writer-blocks-readers contention we get with a single
+        // Arc<Mutex<Connection>>; NORMAL sync is durable-on-crash but avoids
+        // per-commit fsync; busy_timeout absorbs transient write locks;
+        // mmap_size lets SQLite serve page reads without syscalls.
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL;\n\
+             PRAGMA synchronous=NORMAL;\n\
+             PRAGMA busy_timeout=5000;\n\
+             PRAGMA temp_store=MEMORY;\n\
+             PRAGMA mmap_size=268435456;",
+        )?;
+
         // Initialize schema
         schema::init(&conn)?;
 
