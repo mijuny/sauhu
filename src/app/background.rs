@@ -217,25 +217,38 @@ impl SauhuApp {
                         }
                     }
                     BackgroundRequest::ValidateFiles { paths, viewport_id } => {
-                        let mut dicom_paths: Vec<PathBuf> = Vec::new();
+                        use rayon::prelude::*;
 
-                        for path in paths {
-                            if path.is_dir() {
-                                // Scan directory for DICOM files
-                                if let Ok(dcm_files) = crate::dicom::scan_directory(&path) {
-                                    for dcm in dcm_files {
-                                        dicom_paths.push(PathBuf::from(&dcm.path));
-                                    }
-                                }
-                            } else if path.is_file() {
-                                // Try to open as DICOM and check if it has pixel data
-                                if let Ok(dcm) = DicomFile::open(&path) {
-                                    if dcm.rows().is_some() && dcm.columns().is_some() {
-                                        dicom_paths.push(path);
-                                    }
-                                }
+                        // Split directories from single files: directories feed
+                        // scan_directory (already parallelised internally),
+                        // single-file paths get opened in parallel via rayon so
+                        // large drag-and-drop sets don't stall the UI while we
+                        // parse headers serially.
+                        let (dir_paths, file_paths): (Vec<PathBuf>, Vec<PathBuf>) =
+                            paths.into_iter().partition(|p| p.is_dir());
+
+                        let mut dicom_paths: Vec<PathBuf> = Vec::new();
+                        for path in dir_paths {
+                            if let Ok(dcm_files) = crate::dicom::scan_directory(&path) {
+                                dicom_paths.extend(
+                                    dcm_files.into_iter().map(|dcm| PathBuf::from(&dcm.path)),
+                                );
                             }
                         }
+                        let mut validated: Vec<PathBuf> = file_paths
+                            .into_par_iter()
+                            .filter(|p| p.is_file())
+                            .filter_map(|path| {
+                                DicomFile::open(&path).ok().and_then(|dcm| {
+                                    if dcm.rows().is_some() && dcm.columns().is_some() {
+                                        Some(path)
+                                    } else {
+                                        None
+                                    }
+                                })
+                            })
+                            .collect();
+                        dicom_paths.append(&mut validated);
 
                         // Sort by filename for consistent ordering
                         dicom_paths.sort();

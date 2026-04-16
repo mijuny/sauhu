@@ -486,22 +486,30 @@ impl DicomFile {
     }
 }
 
-/// Scan a directory for DICOM files
+/// Scan a directory for DICOM files.
+///
+/// Each candidate file is opened via dicom-object to read its meta header.
+/// On a 1 k-file study that's 1 k serial file opens on the calling thread;
+/// parallelising the opens with rayon gives a roughly Ncpu speedup on spinning
+/// / network storage and doesn't hurt on fast SSDs. The order of the returned
+/// Vec doesn't matter — `group_files_by_series` re-sorts each series.
 pub fn scan_directory<P: AsRef<Path>>(path: P) -> Result<Vec<DicomFile>> {
-    let mut files = Vec::new();
+    use rayon::prelude::*;
 
-    for entry in walkdir::WalkDir::new(&path)
+    // Walk the directory serially (cheap, dominated by syscall latency); only
+    // collect regular files and hand their paths off to rayon for the parse.
+    let candidates: Vec<std::path::PathBuf> = walkdir::WalkDir::new(&path)
         .follow_links(true)
         .into_iter()
         .filter_map(|e| e.ok())
-    {
-        if entry.file_type().is_file() {
-            // Try to open as DICOM
-            if let Ok(dcm) = DicomFile::open(entry.path()) {
-                files.push(dcm);
-            }
-        }
-    }
+        .filter(|e| e.file_type().is_file())
+        .map(|e| e.into_path())
+        .collect();
+
+    let files: Vec<DicomFile> = candidates
+        .into_par_iter()
+        .filter_map(|p| DicomFile::open(&p).ok())
+        .collect();
 
     tracing::info!(
         "Scanned {} DICOM files from {:?}",
