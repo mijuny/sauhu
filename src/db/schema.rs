@@ -1,7 +1,11 @@
-// DB schema provides full CRUD API; not all functions are used yet
-#![allow(dead_code)]
-
 //! Database schema for Sauhu
+//!
+//! This module is intentionally a full CRUD API over the sqlite schema even
+//! though many operations aren't reachable from the UI yet (PACS server
+//! management, per-study last-accessed bumps, explicit study deletion).
+//! Keeping the lint allow scoped to this module keeps the surface audit-
+//! able: once a function finds its UI caller the allow goes away for it.
+#![allow(dead_code)]
 
 use anyhow::Result;
 use rusqlite::Connection;
