@@ -1355,11 +1355,21 @@ impl MprSeries {
         }
 
         // Create sync info for this MPR series
+        let sorted_locations: Vec<(f64, usize)> = {
+            let mut v: Vec<(f64, usize)> = slice_locations
+                .iter()
+                .enumerate()
+                .filter_map(|(i, loc)| loc.map(|l| (l, i)))
+                .collect();
+            v.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+            v
+        };
         let sync_info = SyncInfo {
             frame_of_reference_uid: volume.frame_of_reference_uid.clone(),
             study_instance_uid: volume.study_instance_uid.clone(),
             orientation,
             slice_locations,
+            sorted_locations,
         };
 
         // Debug: log sync info and patient info

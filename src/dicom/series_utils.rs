@@ -11,16 +11,62 @@ pub struct SyncInfo {
     pub study_instance_uid: Option<String>,
     pub orientation: Option<AnatomicalPlane>,
     pub slice_locations: Vec<Option<f64>>,
+    /// `(location, original_index)` pairs sorted by location, with `None`
+    /// entries filtered out. Cached once at construction so hot viewport-sync
+    /// paths can binary-search instead of scanning `slice_locations` each time.
+    pub sorted_locations: Vec<(f64, usize)>,
 }
 
 impl SyncInfo {
     pub fn from_series_info(info: &SeriesInfo) -> Self {
+        let sorted_locations = build_sorted_locations(&info.slice_locations);
         Self {
             frame_of_reference_uid: info.frame_of_reference_uid.clone(),
             study_instance_uid: info.study_instance_uid.clone(),
             orientation: info.orientation,
             slice_locations: info.slice_locations.clone(),
+            sorted_locations,
         }
+    }
+
+    /// Index of the slice whose location is closest to `target`.
+    ///
+    /// Uses the cached `sorted_locations` table for an O(log N) lookup; the
+    /// old linear scan had to walk every slice on every viewport sync event,
+    /// which became visible with 8-viewport layouts + 500-slice series.
+    pub fn closest_index(&self, target: f64) -> usize {
+        closest_index_sorted(&self.sorted_locations, target)
+    }
+}
+
+fn build_sorted_locations(slice_locations: &[Option<f64>]) -> Vec<(f64, usize)> {
+    let mut sorted: Vec<(f64, usize)> = slice_locations
+        .iter()
+        .enumerate()
+        .filter_map(|(i, loc)| loc.map(|l| (l, i)))
+        .collect();
+    sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    sorted
+}
+
+pub(crate) fn closest_index_sorted(sorted: &[(f64, usize)], target: f64) -> usize {
+    if sorted.is_empty() {
+        return 0;
+    }
+    // partition_point returns the first index whose location is strictly > target.
+    let upper = sorted.partition_point(|&(loc, _)| loc <= target);
+    if upper == 0 {
+        return sorted[0].1;
+    }
+    if upper == sorted.len() {
+        return sorted[sorted.len() - 1].1;
+    }
+    let (lo_loc, lo_idx) = sorted[upper - 1];
+    let (hi_loc, hi_idx) = sorted[upper];
+    if (target - lo_loc).abs() <= (hi_loc - target).abs() {
+        lo_idx
+    } else {
+        hi_idx
     }
 }
 
@@ -481,6 +527,56 @@ fn clean_series_name(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn naive_closest(locations: &[Option<f64>], target: f64) -> usize {
+        locations
+            .iter()
+            .enumerate()
+            .filter_map(|(i, loc)| loc.map(|l| (i, (l - target).abs())))
+            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(i, _)| i)
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn closest_index_sorted_matches_naive_scan() {
+        // A deliberately non-monotonic, sparsely populated table: shuffled
+        // locations with a few None gaps, to match the shape we see from
+        // multi-orientation series.
+        let locations = vec![
+            Some(5.0),
+            None,
+            Some(-3.5),
+            Some(12.0),
+            Some(2.25),
+            None,
+            Some(7.75),
+            Some(-10.0),
+            Some(15.5),
+        ];
+        let sorted = build_sorted_locations(&locations);
+
+        for target in [-20.0, -3.5, 0.0, 2.24, 2.26, 6.9, 12.0, 13.2, 1000.0] {
+            let fast = closest_index_sorted(&sorted, target);
+            let slow = naive_closest(&locations, target);
+            let fast_loc = locations[fast].expect("fast returned a None slot");
+            let slow_loc = locations[slow].expect("slow returned a None slot");
+            // Distances must match even if indices tie-break differently.
+            assert!(
+                (fast_loc - target).abs() == (slow_loc - target).abs(),
+                "target {target}: fast idx={fast} (loc={fast_loc}), slow idx={slow} (loc={slow_loc})"
+            );
+        }
+    }
+
+    #[test]
+    fn closest_index_sorted_handles_empty_and_all_none() {
+        let sorted = build_sorted_locations(&[]);
+        assert_eq!(closest_index_sorted(&sorted, 0.0), 0);
+
+        let sorted = build_sorted_locations(&[None, None, None]);
+        assert_eq!(closest_index_sorted(&sorted, 42.0), 0);
+    }
 
     #[test]
     fn test_parse_mr_names() {

@@ -370,7 +370,7 @@ impl ViewportManager {
             // Find closest slice in this viewport
             if let Some(target_loc) = active_slice_loc {
                 if let Some(ref sync_info) = self.slots[i].sync_info {
-                    let closest_idx = find_closest_slice(&sync_info.slice_locations, target_loc);
+                    let closest_idx = sync_info.closest_index(target_loc);
                     let other_loc = sync_info
                         .slice_locations
                         .get(closest_idx)
@@ -471,7 +471,7 @@ impl ViewportManager {
 
             // Find closest slice in this viewport
             if let Some(ref sync_info) = self.slots[i].sync_info {
-                let closest_idx = find_closest_slice(&sync_info.slice_locations, slice_location);
+                let closest_idx = sync_info.closest_index(slice_location);
                 let closest_loc = sync_info
                     .slice_locations
                     .get(closest_idx)
@@ -1113,13 +1113,3 @@ impl ViewportManager {
     }
 }
 
-/// Find the index with the closest slice location
-fn find_closest_slice(slice_locations: &[Option<f64>], target: f64) -> usize {
-    slice_locations
-        .iter()
-        .enumerate()
-        .filter_map(|(i, loc)| loc.map(|l| (i, (l - target).abs())))
-        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-        .map(|(i, _)| i)
-        .unwrap_or(0)
-}
