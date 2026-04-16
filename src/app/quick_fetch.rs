@@ -250,9 +250,14 @@ impl SauhuApp {
                                 )
                             });
 
-                            // Forward progress updates including series completions
+                            // Forward progress updates including series completions.
+                            // recv_timeout blocks until either a message lands
+                            // or the timeout elapses, so we stop both the CPU
+                            // burn of try_recv+sleep and the up-to-50 ms of
+                            // latency per progress event.
+                            let poll_timeout = std::time::Duration::from_millis(50);
                             loop {
-                                match progress_rx.try_recv() {
+                                match progress_rx.recv_timeout(poll_timeout) {
                                     Ok(progress) => {
                                         // Send progress update
                                         let _ = tx.send(QuickFetchResult::RetrieveProgress {
@@ -284,9 +289,10 @@ impl SauhuApp {
                                             break;
                                         }
                                     }
-                                    Err(mpsc::TryRecvError::Disconnected) => break,
-                                    Err(mpsc::TryRecvError::Empty) => {
-                                        thread::sleep(std::time::Duration::from_millis(50));
+                                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                                        // Loop again; the retrieve thread is
+                                        // likely still working between events.
                                     }
                                 }
                             }

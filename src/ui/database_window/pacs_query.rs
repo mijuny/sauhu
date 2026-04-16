@@ -500,9 +500,13 @@ impl super::DatabaseWindow {
                         )
                     });
 
-                    // Forward progress to UI
+                    // Forward progress to UI. recv_timeout blocks until a
+                    // message arrives instead of burning CPU in a try_recv +
+                    // sleep loop; the timeout only bounds how long we wait
+                    // before re-checking cancel/disconnect state.
+                    let poll_timeout = std::time::Duration::from_millis(50);
                     loop {
-                        match progress_rx.try_recv() {
+                        match progress_rx.recv_timeout(poll_timeout) {
                             Ok(progress) => {
                                 let is_complete = progress.is_complete;
                                 let _ = tx.send(RetrieveResult::Progress(progress));
@@ -510,9 +514,9 @@ impl super::DatabaseWindow {
                                     break;
                                 }
                             }
-                            Err(mpsc::TryRecvError::Disconnected) => break,
-                            Err(mpsc::TryRecvError::Empty) => {
-                                std::thread::sleep(std::time::Duration::from_millis(50));
+                            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                            Err(mpsc::RecvTimeoutError::Timeout) => {
+                                // Retrieve thread still working; poll again.
                             }
                         }
                     }
