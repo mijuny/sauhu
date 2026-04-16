@@ -90,6 +90,13 @@ pub struct GpuCoregistration {
     partials_buffer: Option<wgpu::Buffer>,
     /// Partials staging buffer for CPU readback
     partials_staging_buffer: Option<wgpu::Buffer>,
+    /// Cached resample bind group. Rebuilt only when the bound buffers
+    /// change (i.e. inside `upload_volumes`). Previously compute_ncc created
+    /// it on every optimiser step, which burned noticeable time inside the
+    /// Powell line-search inner loop.
+    resample_bind_group: Option<wgpu::BindGroup>,
+    /// Cached NCC bind group, same lifetime story as the resample one.
+    ncc_bind_group: Option<wgpu::BindGroup>,
     /// Target volume dimensions
     target_dims: (usize, usize, usize),
     /// Source volume dimensions
@@ -264,6 +271,8 @@ impl GpuCoregistration {
             ncc_uniform_buffer,
             partials_buffer: None,
             partials_staging_buffer: None,
+            resample_bind_group: None,
+            ncc_bind_group: None,
             target_dims: (0, 0, 0),
             source_dims: (0, 0, 0),
             target_spacing: (1.0, 1.0, 1.0),
@@ -359,6 +368,63 @@ impl GpuCoregistration {
             0,
             bytemuck::bytes_of(&ncc_uniforms),
         );
+
+        // Build the two compute bind groups once, now that every buffer they
+        // reference is in place. compute_ncc runs dozens of times per Powell
+        // line-search step, and rebuilding these descriptors per call showed
+        // up in profiles on modest CT-MR registrations.
+        let target_buffer = self.target_buffer.as_ref().expect("target buffer set above");
+        let source_buffer = self.source_buffer.as_ref().expect("source buffer set above");
+        let resampled_buffer = self
+            .resampled_buffer
+            .as_ref()
+            .expect("resampled buffer set above");
+        let partials_buffer = self
+            .partials_buffer
+            .as_ref()
+            .expect("partials buffer set above");
+
+        self.resample_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Resample Bind Group"),
+            layout: &self.resample_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.transform_uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: source_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: resampled_buffer.as_entire_binding(),
+                },
+            ],
+        }));
+
+        self.ncc_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("NCC Bind Group"),
+            layout: &self.ncc_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.ncc_uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: target_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: resampled_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: partials_buffer.as_entire_binding(),
+                },
+            ],
+        }));
     }
 
     /// Compute NCC metric for given transform (synchronous, blocks until result ready)
@@ -368,12 +434,9 @@ impl GpuCoregistration {
         queue: &wgpu::Queue,
         transform: &[[f32; 4]; 4],
     ) -> f64 {
-        let target_buffer = self.target_buffer.as_ref().expect("Volumes not uploaded");
-        let source_buffer = self.source_buffer.as_ref().expect("Volumes not uploaded");
-        let resampled_buffer = self
-            .resampled_buffer
-            .as_ref()
-            .expect("Volumes not uploaded");
+        // partials + staging are still needed directly for the copy and read;
+        // target / source / resampled live inside the cached bind groups now
+        // and don't need to be referenced explicitly on the hot path.
         let partials_buffer = self.partials_buffer.as_ref().expect("Volumes not uploaded");
         let staging_buffer = self
             .partials_staging_buffer
@@ -414,48 +477,15 @@ impl GpuCoregistration {
             bytemuck::bytes_of(&transform_uniforms),
         );
 
-        // Create bind groups
-        let resample_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Resample Bind Group"),
-            layout: &self.resample_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.transform_uniform_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: source_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: resampled_buffer.as_entire_binding(),
-                },
-            ],
-        });
-
-        let ncc_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("NCC Bind Group"),
-            layout: &self.ncc_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.ncc_uniform_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: target_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: resampled_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: partials_buffer.as_entire_binding(),
-                },
-            ],
-        });
+        // Reuse bind groups built once in upload_volumes.
+        let resample_bind_group = self
+            .resample_bind_group
+            .as_ref()
+            .expect("Volumes not uploaded");
+        let ncc_bind_group = self
+            .ncc_bind_group
+            .as_ref()
+            .expect("Volumes not uploaded");
 
         // Create command encoder
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
