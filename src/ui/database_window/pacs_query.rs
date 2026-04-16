@@ -630,13 +630,24 @@ impl super::DatabaseWindow {
             }
         );
 
+        // The study upsert and series insert commit atomically inside a single
+        // transaction so a crash can't leave a half-written study row and so
+        // we fsync once per event instead of twice.
+        let tx = match conn.unchecked_transaction() {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::error!("Failed to open DB transaction for series insert: {}", e);
+                return;
+            }
+        };
+
         // Get or create the study ID
-        let study_id = if let RetrieveState::Retrieving {
+        let (study_id, study_created) = if let RetrieveState::Retrieving {
             db_study_id: Some(id),
             ..
         } = &self.retrieve_state
         {
-            *id
+            (*id, None)
         } else if let RetrieveState::Retrieving {
             study_info: Some(info),
             study_uid,
@@ -655,17 +666,11 @@ impl super::DatabaseWindow {
                 accession_number: info.accession_number.clone(),
             };
 
-            match upsert_study_for_retrieval(conn, &retrieval_info, &event.storage_path) {
-                Ok(id) => {
-                    // Update state with the study ID
-                    self.retrieve_state = RetrieveState::Retrieving {
-                        study_uid: study_uid.clone(),
-                        progress: progress.clone(),
-                        study_info: Some(info.clone()),
-                        db_study_id: Some(id),
-                    };
-                    id
-                }
+            match upsert_study_for_retrieval(&tx, &retrieval_info, &event.storage_path) {
+                Ok(id) => (
+                    id,
+                    Some((study_uid.clone(), progress.clone(), info.clone())),
+                ),
                 Err(e) => {
                     tracing::error!("Failed to create study record: {}", e);
                     return;
@@ -676,22 +681,9 @@ impl super::DatabaseWindow {
             return;
         };
 
-        // If this is the first series and we should open the study, do so
-        if is_first_series && self.open_after_retrieve {
-            self.open_after_retrieve = false; // Reset flag
-
-            // Get the study from DB to open in viewer
-            if let Ok(Some(study)) = get_study(conn, study_id) {
-                self.pending_action = Some(OpenStudyAction { study });
-                // Close the database window
-                self.open = false;
-                tracing::info!("Opening study after first series arrived");
-            }
-        }
-
         // Insert the series
-        match insert_series_from_event(
-            conn,
+        if let Err(e) = insert_series_from_event(
+            &tx,
             study_id,
             &event.series_uid,
             event.series_number,
@@ -699,30 +691,57 @@ impl super::DatabaseWindow {
             &event.modality,
             event.num_images,
         ) {
-            Ok(_) => {
-                tracing::info!(
-                    "Inserted series {} ({} images) during retrieval",
-                    event.series_uid,
-                    event.num_images
-                );
+            tracing::warn!("Failed to insert series {}: {}", event.series_uid, e);
+            return;
+        }
 
-                // Send event to app/sidebar for real-time update
-                let added_event = SeriesAddedEvent {
-                    study_id,
-                    series_uid: event.series_uid.clone(),
-                    series_description: event.series_description.clone(),
-                    modality: event.modality.clone(),
-                    num_images: event.num_images,
-                    storage_path: event.storage_path.clone(),
-                };
+        // Look up the study row if we need to trigger auto-open; doing the read
+        // inside the same transaction keeps us from racing a concurrent writer.
+        let auto_open_study = if is_first_series && self.open_after_retrieve {
+            get_study(&tx, study_id).ok().flatten()
+        } else {
+            None
+        };
 
-                if let Err(e) = self.series_added_tx.send(added_event) {
-                    tracing::warn!("Failed to send series added event: {}", e);
-                }
-            }
-            Err(e) => {
-                tracing::warn!("Failed to insert series {}: {}", event.series_uid, e);
-            }
+        if let Err(e) = tx.commit() {
+            tracing::error!("Failed to commit series insert transaction: {}", e);
+            return;
+        }
+
+        // Mutate state only after the write has landed.
+        if let Some((study_uid, progress, info)) = study_created {
+            self.retrieve_state = RetrieveState::Retrieving {
+                study_uid,
+                progress,
+                study_info: Some(info),
+                db_study_id: Some(study_id),
+            };
+        }
+
+        if let Some(study) = auto_open_study {
+            self.open_after_retrieve = false;
+            self.pending_action = Some(OpenStudyAction { study });
+            self.open = false;
+            tracing::info!("Opening study after first series arrived");
+        }
+
+        tracing::info!(
+            "Inserted series {} ({} images) during retrieval",
+            event.series_uid,
+            event.num_images
+        );
+
+        // Send event to app/sidebar for real-time update
+        let added_event = SeriesAddedEvent {
+            study_id,
+            series_uid: event.series_uid.clone(),
+            series_description: event.series_description.clone(),
+            modality: event.modality.clone(),
+            num_images: event.num_images,
+            storage_path: event.storage_path.clone(),
+        };
+        if let Err(e) = self.series_added_tx.send(added_event) {
+            tracing::warn!("Failed to send series added event: {}", e);
         }
     }
 }
