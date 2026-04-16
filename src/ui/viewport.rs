@@ -1197,28 +1197,102 @@ impl Viewport {
     }
 }
 
-/// Calculate optimal window from pixel data using histogram analysis
-fn calculate_optimal_window(pixels: &[u16], slope: f64, intercept: f64) -> (f64, f64) {
+/// Calculate optimal window from pixel data using 2nd/98th percentile
+/// histogram analysis.
+///
+/// The previous implementation allocated an f64 value per pixel and sorted
+/// the whole buffer (O(N log N) and ~2 MiB of heap for a 512² slice). Since
+/// the raw data is u16 we can bucket directly on the raw values in one
+/// linear pass and recover the percentile pixel values with 2*U16_BINS
+/// additions, then apply the rescale once.
+pub(crate) fn calculate_optimal_window(pixels: &[u16], slope: f64, intercept: f64) -> (f64, f64) {
     if pixels.is_empty() {
         return (0.0, 1.0);
     }
 
-    // Convert to actual values
-    let values: Vec<f64> = pixels
-        .iter()
-        .map(|&p| (p as f64) * slope + intercept)
-        .collect();
+    const U16_BINS: usize = 1 << 16;
+    let mut hist = vec![0u32; U16_BINS];
+    for &p in pixels {
+        hist[p as usize] += 1;
+    }
 
-    // Calculate percentiles for robust windowing
-    let mut sorted = values.clone();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let total = pixels.len() as u64;
+    let lo_target = total * 2 / 100;
+    let hi_target = total * 98 / 100;
 
-    let len = sorted.len();
-    let p2 = sorted[len * 2 / 100]; // 2nd percentile
-    let p98 = sorted[len * 98 / 100]; // 98th percentile
+    let mut cumulative: u64 = 0;
+    let mut p2_raw: u16 = 0;
+    let mut p98_raw: u16 = u16::MAX;
+    let mut p2_found = false;
+    for (bin, &count) in hist.iter().enumerate() {
+        if count == 0 {
+            continue;
+        }
+        cumulative += count as u64;
+        if !p2_found && cumulative >= lo_target {
+            p2_raw = bin as u16;
+            p2_found = true;
+        }
+        if cumulative >= hi_target {
+            p98_raw = bin as u16;
+            break;
+        }
+    }
 
+    let p2 = (p2_raw as f64) * slope + intercept;
+    let p98 = (p98_raw as f64) * slope + intercept;
     let window_width = (p98 - p2).max(1.0);
     let window_center = (p2 + p98) / 2.0;
-
     (window_center, window_width)
+}
+
+#[cfg(test)]
+mod auto_window_tests {
+    use super::calculate_optimal_window;
+
+    /// Legacy sort-based reference, kept in the test module so regressions in
+    /// the histogram implementation surface as output differences instead of
+    /// only showing up in bench numbers.
+    fn legacy_sort(pixels: &[u16], slope: f64, intercept: f64) -> (f64, f64) {
+        if pixels.is_empty() {
+            return (0.0, 1.0);
+        }
+        let mut values: Vec<f64> = pixels
+            .iter()
+            .map(|&p| (p as f64) * slope + intercept)
+            .collect();
+        values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let len = values.len();
+        let p2 = values[len * 2 / 100];
+        let p98 = values[len * 98 / 100];
+        ((p2 + p98) / 2.0, (p98 - p2).max(1.0))
+    }
+
+    #[test]
+    fn empty_input_returns_sentinel() {
+        assert_eq!(calculate_optimal_window(&[], 1.0, -1024.0), (0.0, 1.0));
+    }
+
+    #[test]
+    fn width_floor_respected() {
+        // Every pixel identical — legacy would get width=0, floor to 1.0.
+        let pixels = vec![1234u16; 4096];
+        let (_, w) = calculate_optimal_window(&pixels, 1.0, -1024.0);
+        assert_eq!(w, 1.0);
+    }
+
+    #[test]
+    fn matches_legacy_on_synthetic_slice() {
+        // Build a realistic-looking synthetic 256x256 slice and confirm the
+        // new path produces the same percentile bounds as the legacy one.
+        let mut pixels = Vec::with_capacity(256 * 256);
+        let mut state: u32 = 0xA5A5_5A5A;
+        for _ in 0..(256 * 256) {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            pixels.push((state >> 16) as u16 & 0x0FFF);
+        }
+        let hist = calculate_optimal_window(&pixels, 1.0, -1024.0);
+        let sort = legacy_sort(&pixels, 1.0, -1024.0);
+        assert_eq!(hist, sort);
+    }
 }
