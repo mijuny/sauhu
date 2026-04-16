@@ -66,8 +66,14 @@ impl DicomTexture {
             }
         };
 
-        // Convert u16 pixels to bytes and upload
-        let pixel_bytes: Vec<u8> = image.pixels.iter().flat_map(|&p| p.to_le_bytes()).collect();
+        // R16Uint wants the pixels as native-endian bytes. Reinterpret the u16
+        // buffer in place instead of allocating a second heap buffer per
+        // upload; this runs on every cache miss and on every MPR slice.
+        // wgpu::R16Uint consumes LE on every platform we target (x86_64 +
+        // aarch64), so a direct cast_slice is correct.
+        #[cfg(not(target_endian = "little"))]
+        compile_error!("DicomTexture::from_dicom_image assumes a little-endian target for R16Uint uploads");
+        let pixel_bytes: &[u8] = bytemuck::cast_slice(&image.pixels);
 
         if panic::catch_unwind(panic::AssertUnwindSafe(|| {
             queue.write_texture(
@@ -77,7 +83,7 @@ impl DicomTexture {
                     origin: wgpu::Origin3d::ZERO,
                     aspect: wgpu::TextureAspect::All,
                 },
-                &pixel_bytes,
+                pixel_bytes,
                 wgpu::ImageDataLayout {
                     offset: 0,
                     bytes_per_row: Some(width * 2),
@@ -107,5 +113,20 @@ impl DicomTexture {
     /// Get texture dimensions
     pub fn dimensions(&self) -> (u32, u32) {
         (self.width, self.height)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Guard rails for the zero-copy u16 -> bytes reinterpretation used on
+    //! every texture upload. If the target platform ever becomes big-endian
+    //! or the wgpu format changes, these tests will flag the mismatch before
+    //! we ship garbled pixel data to the GPU.
+    #[test]
+    fn cast_slice_matches_little_endian_bytes() {
+        let pixels: Vec<u16> = vec![0x0000, 0x1234, 0xFFFF, 0xABCD];
+        let cast: &[u8] = bytemuck::cast_slice(&pixels);
+        let expected: Vec<u8> = pixels.iter().flat_map(|p| p.to_le_bytes()).collect();
+        assert_eq!(cast, expected.as_slice());
     }
 }

@@ -10,6 +10,10 @@ fn to_bytes_flat_map_collect(pixels: &[u16]) -> Vec<u8> {
     pixels.iter().flat_map(|&p| p.to_le_bytes()).collect()
 }
 
+fn to_bytes_cast_slice(pixels: &[u16]) -> &[u8] {
+    bytemuck::cast_slice(pixels)
+}
+
 fn synth_pixels(n: usize) -> Vec<u16> {
     let mut out = Vec::with_capacity(n);
     let mut state: u32 = 0xDEAD_BEEF;
@@ -27,6 +31,9 @@ fn bench_texture_bytes(c: &mut Criterion) {
         group.throughput(Throughput::Bytes((dim * dim * 2) as u64));
         group.bench_function(format!("flat_map_{dim}x{dim}"), |b| {
             b.iter(|| to_bytes_flat_map_collect(black_box(&pixels)))
+        });
+        group.bench_function(format!("cast_slice_{dim}x{dim}"), |b| {
+            b.iter(|| to_bytes_cast_slice(black_box(&pixels)).len())
         });
     }
     group.finish();
