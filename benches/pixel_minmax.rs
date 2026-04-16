@@ -17,6 +17,31 @@ fn minmax_two_passes(pixels: &[u16], slope: f64, intercept: f64) -> (f64, f64) {
     (min, max)
 }
 
+/// Post-optimization path: one linear pass over u16, rescale the two
+/// endpoints once.
+fn minmax_single_pass(pixels: &[u16], slope: f64, intercept: f64) -> (f64, f64) {
+    let mut iter = pixels.iter().copied();
+    let Some(first) = iter.next() else {
+        return (f64::INFINITY, f64::NEG_INFINITY);
+    };
+    let mut min = first;
+    let mut max = first;
+    for p in iter {
+        if p < min {
+            min = p;
+        } else if p > max {
+            max = p;
+        }
+    }
+    let a = (min as f64) * slope + intercept;
+    let b = (max as f64) * slope + intercept;
+    if a <= b {
+        (a, b)
+    } else {
+        (b, a)
+    }
+}
+
 fn synth_pixels(n: usize) -> Vec<u16> {
     let mut out = Vec::with_capacity(n);
     let mut state: u32 = 0xC0DE_BABE;
@@ -35,6 +60,11 @@ fn bench_minmax(c: &mut Criterion) {
         group.bench_function(format!("two_pass_{dim}x{dim}"), |b| {
             b.iter(|| {
                 minmax_two_passes(black_box(&pixels), black_box(1.0), black_box(-1024.0))
+            })
+        });
+        group.bench_function(format!("single_pass_{dim}x{dim}"), |b| {
+            b.iter(|| {
+                minmax_single_pass(black_box(&pixels), black_box(1.0), black_box(-1024.0))
             })
         });
     }

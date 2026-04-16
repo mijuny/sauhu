@@ -114,15 +114,13 @@ impl DicomImage {
 
             if is_ct || intercept != 0.0 || slope != 1.0 {
                 tracing::debug!("Rescale: slope={}, intercept={}", slope, intercept);
-                // Calculate scaled range
-                let min = raw_pixels
-                    .iter()
-                    .map(|&p| (p as f64) * slope + intercept)
-                    .fold(f64::INFINITY, f64::min);
-                let max = raw_pixels
-                    .iter()
-                    .map(|&p| (p as f64) * slope + intercept)
-                    .fold(f64::NEG_INFINITY, f64::max);
+                // raw_min/raw_max already bracket the u16 range; the rescale is
+                // monotonic in the pixel value so we only need to transform the
+                // two endpoints (swapping when slope is negative) instead of
+                // sweeping the whole buffer twice more.
+                let a = raw_min * slope + intercept;
+                let b = raw_max * slope + intercept;
+                let (min, max) = if a <= b { (a, b) } else { (b, a) };
                 tracing::debug!("Scaled range: min={:.0}, max={:.0}", min, max);
                 (raw_pixels, min, max, slope, intercept)
             } else {
@@ -147,8 +145,9 @@ impl DicomImage {
                     Ok(img) => {
                         let gray = img.to_luma16();
                         let pixels: Vec<u16> = gray.pixels().map(|p| p.0[0]).collect();
-                        let min = *pixels.iter().min().unwrap_or(&0) as f64;
-                        let max = *pixels.iter().max().unwrap_or(&65535) as f64;
+                        let (min_u, max_u) = u16_minmax(&pixels);
+                        let min = min_u as f64;
+                        let max = max_u as f64;
                         tracing::debug!(
                             "Decompressed to grayscale, pixel range: {:.0}-{:.0}",
                             min,
@@ -600,9 +599,7 @@ fn extract_raw_pixels_direct(
         );
     }
 
-    let min = *pixels.iter().min().unwrap_or(&0);
-    let max = *pixels.iter().max().unwrap_or(&65535);
-
+    let (min, max) = u16_minmax(&pixels);
     Ok((pixels, min as f64, max as f64))
 }
 
@@ -684,10 +681,57 @@ fn extract_raw_pixels(
         );
     };
 
-    let min = *pixels.iter().min().unwrap_or(&0);
-    let max = *pixels.iter().max().unwrap_or(&65535);
-
+    let (min, max) = u16_minmax(&pixels);
     Ok((pixels, min as f64, max as f64))
+}
+
+/// Single-pass min/max over u16 pixels.
+///
+/// `iter().min()` + `iter().max()` walks the buffer twice. For a 512^2 slice
+/// that is an extra ~260 k reads we pay on every compressed-image decode and
+/// direct pixel extract path. Merging into one pass also lets the optimiser
+/// keep `min`/`max` in registers.
+#[inline]
+fn u16_minmax(pixels: &[u16]) -> (u16, u16) {
+    let mut iter = pixels.iter().copied();
+    let Some(first) = iter.next() else {
+        return (0, u16::MAX);
+    };
+    let mut min = first;
+    let mut max = first;
+    for p in iter {
+        if p < min {
+            min = p;
+        } else if p > max {
+            max = p;
+        }
+    }
+    (min, max)
+}
+
+#[cfg(test)]
+mod minmax_tests {
+    use super::u16_minmax;
+
+    #[test]
+    fn empty_returns_full_range_sentinel() {
+        assert_eq!(u16_minmax(&[]), (0, u16::MAX));
+    }
+
+    #[test]
+    fn single_value_is_both_ends() {
+        assert_eq!(u16_minmax(&[1234]), (1234, 1234));
+    }
+
+    #[test]
+    fn matches_naive_minmax() {
+        let xs = [500u16, 10, 42, 42, 65000, 1, 7];
+        let expected = (
+            *xs.iter().min().unwrap(),
+            *xs.iter().max().unwrap(),
+        );
+        assert_eq!(u16_minmax(&xs), expected);
+    }
 }
 
 /// Preset window/level values for different modalities and tissues
