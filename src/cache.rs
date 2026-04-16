@@ -5,11 +5,17 @@
 
 use crate::dicom::{DicomFile, DicomImage};
 use indexmap::IndexMap;
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
+
+/// Cap on outstanding prefetch requests. Beyond this we hold paths in
+/// `prefetch_backlog` instead of flooding the worker channel. Keeps memory
+/// bounded when the user opens a large series and then switches away before
+/// the workers can drain.
+const MAX_PENDING_PREFETCH: usize = 32;
 
 /// Estimate memory usage of a DicomImage in bytes
 fn estimate_memory(image: &DicomImage) -> usize {
@@ -52,6 +58,10 @@ pub struct ImageCache {
     prefetch_rx: Receiver<PrefetchResult>,
     /// Paths currently being prefetched (avoid duplicates)
     pending_prefetch: HashSet<PathBuf>,
+    /// Prefetch requests we have decided to make but haven't dispatched to a
+    /// worker yet because `pending_prefetch` is at `MAX_PENDING_PREFETCH`.
+    /// Drained as completed results free up slots.
+    prefetch_backlog: VecDeque<PathBuf>,
     /// Prefetch window: images ahead of current
     prefetch_ahead: usize,
     /// Prefetch window: images behind current
@@ -84,6 +94,7 @@ impl ImageCache {
             prefetch_tx,
             prefetch_rx,
             pending_prefetch: HashSet::new(),
+            prefetch_backlog: VecDeque::new(),
             prefetch_ahead,
             prefetch_behind,
         }
@@ -230,12 +241,9 @@ impl ImageCache {
         // Sort by distance from current (closest first)
         to_prefetch.sort_by_key(|(i, _)| (*i as i32 - current_index as i32).abs());
 
-        // Queue for prefetch
+        // Queue for prefetch via the throttled enqueue helper.
         for (_, path) in to_prefetch {
-            self.pending_prefetch.insert(path.clone());
-            let _ = self
-                .prefetch_tx
-                .send(PrefetchRequest { path: path.clone() });
+            self.enqueue_prefetch(path.clone());
         }
     }
 
@@ -253,10 +261,37 @@ impl ImageCache {
                 continue;
             }
 
+            self.enqueue_prefetch(path.clone());
+        }
+    }
+
+    /// Either dispatch a prefetch request now or hold it in the backlog if
+    /// too many are already in flight. Keeps the worker channel from
+    /// ballooning when the caller hands us a whole thousand-image series at
+    /// once.
+    fn enqueue_prefetch(&mut self, path: PathBuf) {
+        if self.pending_prefetch.contains(&path) {
+            return;
+        }
+        if self.pending_prefetch.len() < MAX_PENDING_PREFETCH {
             self.pending_prefetch.insert(path.clone());
-            let _ = self
-                .prefetch_tx
-                .send(PrefetchRequest { path: path.clone() });
+            let _ = self.prefetch_tx.send(PrefetchRequest { path });
+        } else {
+            self.prefetch_backlog.push_back(path);
+        }
+    }
+
+    /// Dispatch backlog entries into workers while we still have room.
+    fn drain_prefetch_backlog(&mut self) {
+        while self.pending_prefetch.len() < MAX_PENDING_PREFETCH {
+            let Some(path) = self.prefetch_backlog.pop_front() else {
+                break;
+            };
+            if self.entries.contains_key(&path) || self.pending_prefetch.contains(&path) {
+                continue;
+            }
+            self.pending_prefetch.insert(path.clone());
+            let _ = self.prefetch_tx.send(PrefetchRequest { path });
         }
     }
 
@@ -272,6 +307,8 @@ impl ImageCache {
                 }
             }
         }
+        // Completed results free up in-flight slots, so top up from backlog.
+        self.drain_prefetch_backlog();
     }
 
     /// Clear all cached images (call when switching patients)
@@ -279,6 +316,7 @@ impl ImageCache {
         self.entries.clear();
         self.current_memory = 0;
         self.pending_prefetch.clear();
+        self.prefetch_backlog.clear();
         tracing::debug!("Image cache cleared");
     }
 
@@ -530,5 +568,44 @@ mod tests {
         // Should not panic when no results are available
         cache.process_prefetch_results();
         assert_eq!(cache.entries.len(), 0);
+    }
+
+    #[test]
+    fn prefetch_series_caps_in_flight_and_keeps_backlog() {
+        // Hand the cache more files than the outstanding-prefetch cap.
+        // pending_prefetch must stop at MAX_PENDING_PREFETCH; the rest go to
+        // the backlog so the worker channel doesn't balloon.
+        let mut cache = ImageCache::new(10 * 1024 * 1024);
+        let path_count = MAX_PENDING_PREFETCH + 25;
+        let paths: Vec<PathBuf> = (0..path_count)
+            .map(|i| PathBuf::from(format!("/nonexistent/image{}.dcm", i)))
+            .collect();
+
+        cache.prefetch_series(&paths);
+
+        assert!(
+            cache.pending_prefetch.len() <= MAX_PENDING_PREFETCH,
+            "pending_prefetch ({}) exceeded cap",
+            cache.pending_prefetch.len()
+        );
+        assert_eq!(
+            cache.pending_prefetch.len() + cache.prefetch_backlog.len(),
+            path_count
+        );
+        assert!(!cache.prefetch_backlog.is_empty());
+    }
+
+    #[test]
+    fn clear_drops_prefetch_backlog() {
+        let mut cache = ImageCache::new(10 * 1024 * 1024);
+        let paths: Vec<PathBuf> = (0..(MAX_PENDING_PREFETCH + 10))
+            .map(|i| PathBuf::from(format!("/nonexistent/image{}.dcm", i)))
+            .collect();
+        cache.prefetch_series(&paths);
+        assert!(!cache.prefetch_backlog.is_empty());
+
+        cache.clear();
+        assert!(cache.prefetch_backlog.is_empty());
+        assert!(cache.pending_prefetch.is_empty());
     }
 }
