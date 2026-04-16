@@ -10,14 +10,18 @@ description = "Lightning-fast DICOM viewer for Linux"
 license = "PolyForm-Noncommercial-1.0.0"
 default-run = "sauhu"
 
-# Feature gates for pixel-data decoders. Default matches the prior build
-# behaviour (both JPEG2000 and CharLS enabled); a smaller build can opt out
-# with `cargo build --release --no-default-features` to drop ~2-3 MB of C/C++
-# decoder code.
+# Feature gates:
+# - codec-{jpeg2k,charls}: heavy C/C++ pixel-data decoders, on by default so
+#   cargo build keeps the same decode coverage as before. A smaller build
+#   can opt out with --no-default-features and drop ~2-3 MB of code.
+# - test-binaries: developer-only CLIs (dicom_test, pacs_test) that drag in
+#   no extra dependencies but add compile time on every cargo build. Off by
+#   default; enable with --features test-binaries when you need them.
 [features]
 default = ["codec-jpeg2k", "codec-charls"]
 codec-jpeg2k = ["dicom-pixeldata/openjp2"]
 codec-charls = ["dicom-pixeldata/charls"]
+test-binaries = []
 
 [dependencies]
 # Workspace
@@ -75,10 +79,12 @@ path = "src/main.rs"
 [[bin]]
 name = "dicom_test"
 path = "src/bin/dicom_test.rs"
+required-features = ["test-binaries"]
 
 [[bin]]
 name = "pacs_test"
 path = "src/bin/pacs_test.rs"
+required-features = ["test-binaries"]
 
 [[bin]]
 name = "sauhu-agent-cli"
@@ -107,3 +113,8 @@ harness = false
 opt-level = 3
 lto = true
 codegen-units = 1
+# Strip debug info from shipped binaries. Already had LTO + a single codegen
+# unit; stripping takes the release binary the rest of the way down. Keep
+# panic=unwind (the default) so user-facing crash reports still include a
+# backtrace.
+strip = "debuginfo"
