@@ -4,7 +4,7 @@ use super::texture::DicomTexture;
 use bytemuck::{Pod, Zeroable};
 use eframe::egui_wgpu::{self, CallbackResources};
 use eframe::wgpu;
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::num::NonZeroU64;
 use std::path::PathBuf;
 use wgpu::util::DeviceExt;
@@ -40,6 +40,9 @@ pub const MAX_CACHED_TEXTURES: usize = 500;
 /// Cached texture entry with bind group
 struct CachedTexture {
     texture: DicomTexture,
+    /// Monotonic counter stamped on every cache hit so eviction can pick the
+    /// least-recently-used entry without shuffling a VecDeque on every touch.
+    last_touch: u64,
 }
 
 /// GPU resources for DICOM rendering, stored in CallbackResources
@@ -58,8 +61,12 @@ pub struct DicomRenderResources {
     pub image_dims: Vec<Option<(u32, u32)>>,
     /// GPU texture cache: path -> cached texture
     texture_cache: HashMap<PathBuf, CachedTexture>,
-    /// LRU order for texture cache eviction
-    texture_cache_lru: VecDeque<PathBuf>,
+    /// Monotonic counter used to stamp `CachedTexture::last_touch`. Previously
+    /// the cache maintained a `VecDeque<PathBuf>` and did a linear
+    /// `retain(|p| p != path)` on every hit; under fast scrolling that was
+    /// O(cache_size) per tick. The counter keeps hit-path work O(1) and
+    /// defers the scan until we actually need to evict.
+    lru_counter: u64,
     /// Which path is currently bound to each slot
     slot_paths: Vec<Option<PathBuf>>,
 }
@@ -189,7 +196,7 @@ impl DicomRenderResources {
             bind_groups,
             image_dims,
             texture_cache: HashMap::new(),
-            texture_cache_lru: VecDeque::new(),
+            lru_counter: 0,
             slot_paths,
         }
     }
@@ -239,7 +246,7 @@ impl DicomRenderResources {
         }
         // Also clear texture cache when switching patients
         self.texture_cache.clear();
-        self.texture_cache_lru.clear();
+        self.lru_counter = 0;
         tracing::debug!("GPU texture cache cleared");
     }
 
@@ -263,14 +270,25 @@ impl DicomRenderResources {
             }
         }
 
-        // Check if texture is in cache
-        if let Some(cached) = self.texture_cache.get(path) {
-            // Update LRU order
-            self.texture_cache_lru.retain(|p| p != path);
-            self.texture_cache_lru.push_back(path.clone());
+        // Touch the cache entry with a monotonic counter. The O(N) retain on
+        // the old VecDeque LRU turned every cache hit into a scan; this is
+        // O(1). Scoped in its own block so the &mut borrow on the cache ends
+        // before we build the bind group below.
+        self.lru_counter = self.lru_counter.wrapping_add(1);
+        let touch = self.lru_counter;
+        {
+            let Some(entry) = self.texture_cache.get_mut(path) else {
+                return false;
+            };
+            entry.last_touch = touch;
+        }
 
-            // Create bind group with cached texture
-            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let (bind_group, texture_dims) = {
+            let cached = self
+                .texture_cache
+                .get(path)
+                .expect("entry just touched must still be present");
+            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some(&format!("Cached Bind Group Slot {}", slot)),
                 layout: &self.bind_group_layout,
                 entries: &[
@@ -284,16 +302,15 @@ impl DicomRenderResources {
                     },
                 ],
             });
+            (bg, cached.texture.dimensions())
+        };
 
-            self.image_dims[slot] = Some(cached.texture.dimensions());
-            self.bind_groups[slot] = Some(bind_group);
-            self.slot_paths[slot] = Some(path.clone());
+        self.image_dims[slot] = Some(texture_dims);
+        self.bind_groups[slot] = Some(bind_group);
+        self.slot_paths[slot] = Some(path.clone());
 
-            tracing::trace!("GPU cache hit: {:?}", path.file_name().unwrap_or_default());
-            return true;
-        }
-
-        false
+        tracing::trace!("GPU cache hit: {:?}", path.file_name().unwrap_or_default());
+        true
     }
 
     /// Upload texture to cache only (without binding to slot).
@@ -311,14 +328,25 @@ impl DicomRenderResources {
             return true;
         }
 
-        // Evict oldest if cache is full
+        // Evict oldest if cache is full. We scan the whole cache to find the
+        // entry with the smallest `last_touch`; that's O(cache_size) per
+        // eviction, but it only runs when the cache is full, unlike the old
+        // per-hit retain. Hit rate dominates eviction rate, so this is a net
+        // win.
         while self.texture_cache.len() >= MAX_CACHED_TEXTURES {
-            if let Some(old_path) = self.texture_cache_lru.pop_front() {
+            let victim = self
+                .texture_cache
+                .iter()
+                .min_by_key(|(_, cached)| cached.last_touch)
+                .map(|(k, _)| k.clone());
+            if let Some(old_path) = victim {
                 self.texture_cache.remove(&old_path);
                 tracing::trace!(
                     "GPU cache evicted: {:?}",
                     old_path.file_name().unwrap_or_default()
                 );
+            } else {
+                break;
             }
         }
 
@@ -328,10 +356,13 @@ impl DicomRenderResources {
             None => return false,
         };
 
-        // Add to cache (don't bind to any slot)
+        // Add to cache (don't bind to any slot). Stamp `last_touch` with a
+        // fresh counter value so fresh uploads aren't immediately targeted
+        // for eviction.
+        self.lru_counter = self.lru_counter.wrapping_add(1);
+        let touch = self.lru_counter;
         self.texture_cache
-            .insert(path.clone(), CachedTexture { texture });
-        self.texture_cache_lru.push_back(path);
+            .insert(path, CachedTexture { texture, last_touch: touch });
 
         tracing::trace!("GPU cache: uploaded texture to cache");
         true
