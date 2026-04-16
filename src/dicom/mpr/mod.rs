@@ -1196,6 +1196,10 @@ impl ReformattedSlice {
             AnatomicalPlane::Sagittal => center_pos.x,
         };
 
+        // Single-pass min/max so large MPR slices don't scan the pixel buffer
+        // twice just to seed the min_value/max_value metadata fields.
+        let (min_px, max_px) = super::u16_minmax(&self.pixels);
+
         DicomImage {
             pixels: self.pixels.clone(),
             width: self.width,
@@ -1206,8 +1210,10 @@ impl ReformattedSlice {
             window_center: volume.default_window_center,
             window_width: volume.default_window_width,
             modality: volume.modality.clone(),
-            min_value: *self.pixels.iter().min().unwrap_or(&0) as f64,
-            max_value: *self.pixels.iter().max().unwrap_or(&65535) as f64,
+            min_value: min_px as f64,
+            max_value: max_px as f64,
+            anatomy_bounds_cache: std::sync::OnceLock::new(),
+            content_window_cache: std::sync::OnceLock::new(),
             invert: false,
             image_plane: Some(image_plane),
             sop_instance_uid: None,

@@ -353,6 +353,8 @@ mod tests {
             exposure: None,
             slice_location: None,
             pixel_representation: 0,
+            anatomy_bounds_cache: std::sync::OnceLock::new(),
+            content_window_cache: std::sync::OnceLock::new(),
         }
     }
 

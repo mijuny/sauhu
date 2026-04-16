@@ -4,6 +4,7 @@ use super::{spatial::ROIStats, DicomFile, ImagePlane};
 use anyhow::{Context, Result};
 use dicom_pixeldata::PixelDecoder;
 use image::{GrayImage, Luma, RgbaImage};
+use std::sync::OnceLock;
 
 /// Decoded DICOM image with pixel data and metadata
 #[derive(Clone)]
@@ -75,6 +76,19 @@ pub struct DicomImage {
     pub slice_location: Option<f64>,
     /// Pixel representation (0 = unsigned, 1 = signed)
     pub pixel_representation: u16,
+
+    /// Lazily computed anatomy bounding box; cached so repeated smart-fit and
+    /// auto-window calls don't rescan the whole pixel buffer. Thread-safe
+    /// via `OnceLock` because `DicomImage` instances travel across worker
+    /// threads (cache, prefetch, MPR).
+    #[doc(hidden)]
+    pub(crate) anatomy_bounds_cache: OnceLock<Option<(u32, u32, u32, u32)>>,
+    /// Lazily computed content window keyed by the bounds it was computed
+    /// for. Stores `(x_min, y_min, x_max, y_max, center, width)`. Only the
+    /// first caller's bounds are memoised; mismatched callers recompute but
+    /// do not evict, which keeps behaviour identical to the old path.
+    #[doc(hidden)]
+    pub(crate) content_window_cache: OnceLock<(u32, u32, u32, u32, f64, f64)>,
 }
 
 impl DicomImage {
@@ -255,6 +269,8 @@ impl DicomImage {
             exposure,
             slice_location,
             pixel_representation,
+            anatomy_bounds_cache: OnceLock::new(),
+            content_window_cache: OnceLock::new(),
         })
     }
 
@@ -385,8 +401,19 @@ impl DicomImage {
     }
 
     /// Find bounding box of actual anatomy (excluding background)
-    /// Returns (x_min, y_min, x_max, y_max) or None if image is empty
+    /// Returns (x_min, y_min, x_max, y_max) or None if image is empty.
+    ///
+    /// Pixel data is immutable after decode, so the result is cached in
+    /// `anatomy_bounds_cache` and reused on every subsequent call. Before
+    /// caching, smart-fit and auto-window would rescan the full buffer and
+    /// (for non-CT images) sort a freshly-allocated f64 copy each time.
     pub fn find_anatomy_bounds(&self) -> Option<(u32, u32, u32, u32)> {
+        *self
+            .anatomy_bounds_cache
+            .get_or_init(|| self.compute_anatomy_bounds())
+    }
+
+    fn compute_anatomy_bounds(&self) -> Option<(u32, u32, u32, u32)> {
         let is_ct = self.modality.as_ref().map(|m| m == "CT").unwrap_or(false);
 
         // Determine threshold based on modality
@@ -448,9 +475,36 @@ impl DicomImage {
         self.modality.as_ref().map(|m| m == "CT").unwrap_or(false)
     }
 
-    /// Calculate optimal window center/width for content within bounds
-    /// Returns (window_center, window_width)
+    /// Calculate optimal window center/width for content within bounds.
+    /// Returns `(window_center, window_width)`.
+    ///
+    /// The result is memoised per-image keyed by the bounds it was computed
+    /// for: callers that re-run smart-fit with the same anatomy bounds get
+    /// an O(1) cache hit. Callers passing different bounds still recompute
+    /// (and do not evict the cached entry).
     pub fn calculate_content_window(
+        &self,
+        x_min: u32,
+        y_min: u32,
+        x_max: u32,
+        y_max: u32,
+    ) -> (f64, f64) {
+        if let Some(&(cx0, cy0, cx1, cy1, center, width)) = self.content_window_cache.get() {
+            if (cx0, cy0, cx1, cy1) == (x_min, y_min, x_max, y_max) {
+                return (center, width);
+            }
+        }
+        let (center, width) = self.compute_content_window(x_min, y_min, x_max, y_max);
+        // Only seed the cache once; an earlier caller with different bounds
+        // keeps its entry. This matches the previous behaviour of "no cache"
+        // for mismatched callers.
+        let _ = self
+            .content_window_cache
+            .set((x_min, y_min, x_max, y_max, center, width));
+        (center, width)
+    }
+
+    fn compute_content_window(
         &self,
         x_min: u32,
         y_min: u32,
@@ -692,7 +746,7 @@ fn extract_raw_pixels(
 /// direct pixel extract path. Merging into one pass also lets the optimiser
 /// keep `min`/`max` in registers.
 #[inline]
-fn u16_minmax(pixels: &[u16]) -> (u16, u16) {
+pub(crate) fn u16_minmax(pixels: &[u16]) -> (u16, u16) {
     let mut iter = pixels.iter().copied();
     let Some(first) = iter.next() else {
         return (0, u16::MAX);
@@ -731,6 +785,86 @@ mod minmax_tests {
             *xs.iter().max().unwrap(),
         );
         assert_eq!(u16_minmax(&xs), expected);
+    }
+}
+
+#[cfg(test)]
+mod cache_tests {
+    //! Exercises the OnceLock caches for anatomy bounds and content window.
+    //! We can't easily construct a real DicomImage from a raw DICOM file in a
+    //! unit test, but the cache logic itself is independent of the decode
+    //! path, so we build a DicomImage by hand via the same shape used by
+    //! the cache module's test helpers.
+    use super::*;
+
+    fn test_image(w: u32, h: u32, pixels: Vec<u16>) -> DicomImage {
+        DicomImage {
+            pixels,
+            width: w,
+            height: h,
+            pixel_spacing: None,
+            rescale_slope: 1.0,
+            rescale_intercept: 0.0,
+            window_center: 400.0,
+            window_width: 1500.0,
+            modality: Some("CT".to_string()),
+            min_value: 0.0,
+            max_value: 4095.0,
+            invert: false,
+            image_plane: None,
+            sop_instance_uid: None,
+            study_instance_uid: None,
+            patient_name: None,
+            patient_id: None,
+            patient_age: None,
+            patient_sex: None,
+            study_date: None,
+            study_description: None,
+            series_description: None,
+            slice_thickness: None,
+            magnetic_field_strength: None,
+            repetition_time: None,
+            echo_time: None,
+            sequence_name: None,
+            kvp: None,
+            exposure: None,
+            slice_location: None,
+            pixel_representation: 0,
+            anatomy_bounds_cache: OnceLock::new(),
+            content_window_cache: OnceLock::new(),
+        }
+    }
+
+    #[test]
+    fn anatomy_bounds_cached_result_is_stable() {
+        // Simple bright-on-dark 8x8 pattern (central 4x4 "anatomy").
+        let mut pixels = vec![0u16; 64];
+        for y in 2..6 {
+            for x in 2..6 {
+                pixels[y * 8 + x] = 2000; // > -500 HU after slope=1, intercept=0
+            }
+        }
+        let img = test_image(8, 8, pixels);
+        let first = img.find_anatomy_bounds();
+        let second = img.find_anatomy_bounds();
+        assert_eq!(first, second);
+        // Second call must see the cache populated.
+        assert!(img.anatomy_bounds_cache.get().is_some());
+    }
+
+    #[test]
+    fn content_window_caches_only_first_bounds() {
+        let img = test_image(4, 4, vec![100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100, 1200, 1300, 1400, 1500, 1600]);
+        let (c1, w1) = img.calculate_content_window(0, 0, 3, 3);
+        // Same bounds — must hit cache and return identical values.
+        let (c2, w2) = img.calculate_content_window(0, 0, 3, 3);
+        assert_eq!((c1, w1), (c2, w2));
+        assert!(img.content_window_cache.get().is_some());
+
+        // Different bounds recompute but must not evict the cached entry.
+        let (_c3, _w3) = img.calculate_content_window(1, 1, 2, 2);
+        let cached = img.content_window_cache.get().unwrap();
+        assert_eq!((cached.0, cached.1, cached.2, cached.3), (0, 0, 3, 3));
     }
 }
 
