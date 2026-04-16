@@ -79,6 +79,25 @@ path = "src/bin/pacs_test.rs"
 name = "sauhu-agent-cli"
 path = "src/bin/sauhu_agent_cli.rs"
 
+[dev-dependencies]
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "auto_window"
+harness = false
+
+[[bench]]
+name = "pixel_minmax"
+harness = false
+
+[[bench]]
+name = "closest_slice"
+harness = false
+
+[[bench]]
+name = "texture_upload_bytes"
+harness = false
+
 [profile.release]
 opt-level = 3
 lto = true
